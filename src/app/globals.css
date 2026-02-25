@@ -1,0 +1,548 @@
+/* MIT License | Copyright (c) 2026 SERGEI NAZARIAN (SVN) | ALTRO: Semantic Orchestration Layer */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  height: 100%;
+  max-height: 100vh;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  max-height: 100vh;
+  overflow: hidden;
+  background-color: #e5e7eb;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Thin vertical slider */
+.vertical-slider {
+  -webkit-appearance: slider-vertical;
+  appearance: slider-vertical;
+  background: linear-gradient(to top, #3b82f6 0%, #3b82f6 var(--value, 50%), #e5e7eb var(--value, 50%), #e5e7eb 100%);
+  border-radius: 9999px;
+  outline: none;
+}
+
+.vertical-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #3b82f6;
+  cursor: pointer;
+  border: 1px solid #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: all 0.15s;
+}
+
+.vertical-slider::-webkit-slider-thumb:hover {
+  background: #2563eb;
+}
+
+.vertical-slider::-webkit-slider-track {
+  width: 4px;
+  background: transparent;
+}
+
+.vertical-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #3b82f6;
+  cursor: pointer;
+  border: 1px solid #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: all 0.15s;
+}
+
+.vertical-slider::-moz-range-thumb:hover {
+  background: #2563eb;
+}
+
+.vertical-slider::-moz-range-track {
+  width: 4px;
+  background: #e5e7eb;
+  border-radius: 9999px;
+}
+
+/* Internal Core: horizontal progress bar (emerald) */
+.internal-core-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 8px;
+  border-radius: 9999px;
+  outline: none;
+}
+
+.internal-core-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #10b981;
+  cursor: pointer;
+  border: 1px solid rgba(255,255,255,0.5);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+}
+
+.internal-core-range::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: #e5e7eb;
+}
+
+.internal-core-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #10b981;
+  cursor: pointer;
+  border: 1px solid rgba(255,255,255,0.5);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+}
+
+.internal-core-range::-moz-range-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: #e5e7eb;
+}
+
+/* OPR: тонкая линия (2px), аккуратный бегунок (8px), сиреневая ручка */
+.vertical-slider-lilac,
+.vertical-slider-lilac[data-opr-prism] {
+  -webkit-appearance: slider-vertical;
+  appearance: slider-vertical;
+  background: linear-gradient(to top, #C8A2C8 0%, #C8A2C8 var(--value, 50%), #4b5563 var(--value, 50%), #4b5563 100%) !important;
+  border-radius: 9999px;
+  outline: none;
+}
+
+.vertical-slider-lilac::-webkit-slider-thumb,
+.vertical-slider-lilac[data-opr-prism]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #C8A2C8 !important;
+  cursor: pointer;
+  border: 1px solid #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: all 0.15s;
+}
+
+.vertical-slider-lilac::-webkit-slider-thumb:hover,
+.vertical-slider-lilac[data-opr-prism]::-webkit-slider-thumb:hover {
+  background: #b894b8 !important;
+}
+
+.vertical-slider-lilac::-webkit-slider-track,
+.vertical-slider-lilac[data-opr-prism]::-webkit-slider-track {
+  width: 2px;
+  background: #4b5563;
+}
+
+.vertical-slider-lilac::-moz-range-thumb,
+.vertical-slider-lilac[data-opr-prism]::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #C8A2C8 !important;
+  cursor: pointer;
+  border: 1px solid #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: all 0.15s;
+}
+
+.vertical-slider-lilac::-moz-range-thumb:hover,
+.vertical-slider-lilac[data-opr-prism]::-moz-range-thumb:hover {
+  background: #b894b8 !important;
+}
+
+.vertical-slider-lilac::-moz-range-track,
+.vertical-slider-lilac[data-opr-prism]::-moz-range-track {
+  width: 2px;
+  background: #4b5563;
+  border-radius: 9999px;
+}
+
+/* Management: тонкие вертикальные слайдеры (2px), аккуратный бегунок (6px) */
+.vertical-slider-gray {
+  -webkit-appearance: slider-vertical;
+  appearance: slider-vertical;
+  background: linear-gradient(to top, #6b7280 0%, #6b7280 var(--value, 50%), #9ca3af var(--value, 50%), #9ca3af 100%);
+  border-radius: 9999px;
+  outline: none;
+}
+
+.vertical-slider-gray::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #6b7280;
+  cursor: pointer;
+  border: 1px solid #fff;
+  box-shadow: 0 1px 1px rgba(0,0,0,0.15);
+}
+
+.vertical-slider-gray::-webkit-slider-track {
+  width: 2px;
+  background: #9ca3af;
+}
+
+.vertical-slider-gray::-moz-range-thumb {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #6b7280;
+  cursor: pointer;
+  border: 1px solid #fff;
+}
+
+.vertical-slider-gray::-moz-range-track {
+  width: 2px;
+  background: #9ca3af;
+  border-radius: 9999px;
+}
+
+/* Internal Core: тонкий горизонтальный слайдер (2px), аккуратный бегунок */
+.instrument-slider-h {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: #e5e7eb;
+  border-radius: 9999px;
+  outline: none;
+  accent-color: #10b981;
+}
+
+.instrument-slider-h::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10b981;
+  cursor: pointer;
+  border: 1px solid rgba(255,255,255,0.5);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+
+.instrument-slider-h::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10b981;
+  cursor: pointer;
+  border: 1px solid rgba(255,255,255,0.5);
+}
+
+/* Источник/Адаптация: тонкая рамка, синяя при фокусе, без теней */
+.source-adaptation-field {
+  box-shadow: none !important;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.source-adaptation-field:focus {
+  border-color: #3b82f6 !important;
+  box-shadow: 0 0 0 1px #3b82f6 !important;
+  outline: none;
+}
+
+/* Жесткий стиль для панели управления: строгий линейный порядок */
+[data-panel-container="true"] {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: flex-start !important;
+  justify-content: space-between !important;
+  width: 100% !important;
+}
+
+/* Highlighting Engine: изменённые слова в правом поле (BRIDGE/TRANSFIGURE/SLANG) */
+.highlight {
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.1);
+  transition: background 0.5s ease;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* SOURCE: омонимы — сиреневая подсветка (Standard 17.02: никаких желтых фонов) */
+.homonym-highlight {
+  color: #8b5cf6;
+  border-bottom: 2px dashed #8b5cf6;
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+/* OPR LOGIC SEAL: слова с Unicode-ударением (\u0301) — сиреневый цвет [cite: 2026-01-11] */
+.stress-lilac {
+  color: #8b5cf6;
+}
+
+/* ADAPTATION: омонимы — текст вместо линий, сиреневый (#8b5cf6) как в Источнике */
+.homonym-adaptation {
+  color: #8b5cf6;
+  background-color: rgba(200, 162, 200, 0.12);
+  border-radius: 4px;
+  cursor: pointer;
+  text-decoration: none;
+  border: none;
+  transition: background-color 0.3s, color 0.3s;
+}
+.homonym-adaptation:hover {
+  background-color: rgba(200, 162, 200, 0.2);
+}
+
+/* SOURCE: подозрение на ошибку (N-gram low confidence) — сиреневое подчёркивание, кликабельно */
+.suspicious-suggestion {
+  border-bottom: 2px solid #C8A2C8;
+  cursor: pointer;
+}
+
+/* Сканер омонимов: сиреневая подсветка (Standard 17.02) */
+.homonym-mark {
+  color: #8b5cf6;
+  border-bottom: 2px dashed #8b5cf6;
+}
+
+/* ADAPTATION: замены SLANG (пруфы, хейтеры и т.д.) */
+.slang-highlight {
+  background-color: rgba(139, 92, 246, 0.2);
+  color: #8b5cf6;
+  font-weight: bold;
+}
+
+/* Текстовые блоки: скролл внутри панели, не вся страница */
+.adaptation-text-field,
+.source-text-field {
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  line-height: 1.6 !important;
+  font-family: inherit;
+  word-wrap: break-word;
+}
+.adaptation-text-field {
+  padding-top: 4px !important;
+  line-height: 1.6 !important;
+  letter-spacing: 0.02em;
+}
+
+/* SPELLCHECK PERSISTENCE: CSS для полей contenteditable */
+[contenteditable] {
+  display: block;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* ADAPTATION: видимая подсветка при выборе омонима — подтверждение инъекции */
+@keyframes accent-flash-keyframes {
+  0% { background-color: rgba(200, 162, 200, 0.7); color: #C8A2C8; }
+  50% { background-color: rgba(200, 162, 200, 0.4); }
+  100% { background-color: transparent; color: inherit; }
+}
+.accent-flash {
+  animation: accent-flash-keyframes 1.2s ease-out forwards;
+  border-radius: 2px;
+  padding: 0 2px;
+  border: 1px solid rgba(200, 162, 200, 0.6);
+}
+
+/* SCAN 2.0: лёгкое мерцание границ при синтезе */
+@keyframes synthesis-border-flicker {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.3); }
+  50% { box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.6); }
+}
+.synthesis-scanning {
+  animation: synthesis-border-flicker 0.8s ease-in-out infinite;
+}
+
+/* ALTRO 22:18 — тонкие линии (1px), маленькие бегунки, +0.00 над слайдером */
+.altro-slider-thin {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 2px;
+  background: #d1d5db;
+  border-radius: 9999px;
+  outline: none;
+}
+.altro-slider-thin::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: #10b981;
+  cursor: pointer;
+  border: none;
+}
+.altro-slider-thin::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: #10b981;
+  cursor: pointer;
+  border: none;
+}
+
+.altro-slider-ext {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 2px;
+  background: #d1d5db;
+  border-radius: 9999px;
+  outline: none;
+}
+.altro-slider-ext::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: #6b7280;
+  cursor: pointer;
+  border: none;
+}
+.altro-slider-ext::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: #6b7280;
+  cursor: pointer;
+  border: none;
+}
+
+/* OPR: вертикальный, тонкая тёмно-серая направляющая, сиреневый бегунок */
+.altro-slider-opr {
+  -webkit-appearance: slider-vertical;
+  appearance: slider-vertical;
+  writing-mode: vertical-lr;
+  transform: rotate(180deg);
+  width: 2px;
+  height: 140px;
+  background: linear-gradient(to top, #8b5cf6 0%, #8b5cf6 var(--value, 50%), #4b5563 var(--value, 50%), #4b5563 100%);
+  border-radius: 9999px;
+  outline: none;
+}
+.altro-slider-opr::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: #8b5cf6;
+  cursor: pointer;
+  border: none;
+}
+.altro-slider-opr::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: #8b5cf6;
+  cursor: pointer;
+  border: none;
+}
+.altro-slider-opr::-webkit-slider-runnable-track,
+.altro-slider-opr::-moz-range-track {
+  background: #4b5563;
+}
+
+/* ALTRO v1.1: vertical slider — track w-1 bg-gray-300, thumb w-4 h-4 rounded-full bg-purple-600 */
+.altrov-slider-v {
+  -webkit-appearance: slider-vertical;
+  appearance: slider-vertical;
+  writing-mode: vertical-lr;
+  transform: rotate(180deg);
+  width: 4px;
+  height: 200px;
+  background: linear-gradient(to top, #9333ea 0%, #9333ea var(--value, 50%), #d1d5db var(--value, 50%), #d1d5db 100%);
+  border-radius: 9999px;
+  outline: none;
+}
+.altrov-slider-v::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  background: #9333ea;
+  cursor: pointer;
+  border: none;
+}
+.altrov-slider-v::-webkit-slider-runnable-track {
+  width: 4px;
+  background: #d1d5db;
+}
+.altrov-slider-v::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  background: #9333ea;
+  cursor: pointer;
+  border: none;
+}
+.altrov-slider-v::-moz-range-track {
+  width: 4px;
+  background: #d1d5db;
+  border-radius: 9999px;
+}
+
+/* ALTRO v1.1: horizontal slider — flat, no shadow */
+.altrov-slider-h {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: #d1d5db;
+  border-radius: 9999px;
+  outline: none;
+}
+.altrov-slider-h::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  background: #9333ea;
+  cursor: pointer;
+  border: none;
+}
+.altrov-slider-h::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  background: #9333ea;
+  cursor: pointer;
+  border: none;
+}
+
+/* Nexus Command: smart directive field — lilac (OPR link), auto-expand, height matches SCAN */
+.nexus-command-input {
+  line-height: 1.4;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+  transition: height 0.15s ease-out;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  box-sizing: border-box;
+}
+.nexus-command-input::-webkit-scrollbar {
+  display: none;
+}
+.nexus-command-input::placeholder {
+  color: rgba(200, 162, 200, 0.6);
+}
