@@ -185,17 +185,9 @@ export function useAltroPage() {
       setIsScanning(true);
       let sanitizedText: string;
       if (mode === 'mirror') {
+        // Mirror: ТОЛЬКО локальная обработка, БЕЗ LLM-запросов
         const preSanitized = _runCoreSanitation(inputText);
-        try {
-          sanitizedText = await altroOrchestrator.request({
-            text: preSanitized,
-            mode: 'mirror',
-            isFinalAdaptation: true,
-          });
-        } catch (err) {
-          if (typeof window !== 'undefined') console.error('ALTRO MIRROR LLM ERROR:', err);
-          sanitizedText = altroOrchestrator.process(preSanitized, mode, undefined, nexusCommand);
-        }
+        sanitizedText = altroOrchestrator.process(preSanitized, mode, undefined, nexusCommand);
       } else {
         sanitizedText = altroOrchestrator.process(inputText, mode, _runCoreSanitation, nexusCommand);
       }
@@ -646,7 +638,6 @@ export function useAltroPage() {
     setSelectedSuspiciousTokenId,
     showSuspiciousSuggestion,
     setShowSuspiciousSuggestion,
-    semanticOkFlash,
     adaptationFlash,
     homonymReplaceHighlight,
     oprPrismValue,

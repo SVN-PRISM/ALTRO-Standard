@@ -34,10 +34,12 @@ import {
   HOMONYM_DB,
   HOMONYM_WORD_FORMS,
   SPELLCHECK_CORRECTIONS,
+  SPELLCHECK_DICTIONARY,
   type DomainWeights,
   type ScenarioType,
 } from '@/lib/altroData';
 import { applyMirrorSterilization } from '@/lib/altro/engine';
+import { fuzzySpellSuggest } from '@/lib/altro/spellUtils';
 
 const SOURCE_HOMONYM_LIST = ['дела', 'органы', 'поводу', 'пропасть', 'предусмотреть', 'замок', 'белки', 'атлас', 'дорога', 'стоит'];
 
@@ -181,14 +183,36 @@ export function runCoreSanitation(input: RunCoreSanitationInput): RunCoreSanitat
     }
 
     if (token.isMisspelled && isWord) {
-      const lowerWord = token.word.toLowerCase();
-      const correction = SPELLCHECK_CORRECTIONS[lowerWord];
+      const lowerWord = token.word.toLowerCase().replace(/[\u0301]/g, '');
+      let correction = SPELLCHECK_CORRECTIONS[lowerWord];
+
+      if (!correction) {
+        const fuzzy = fuzzySpellSuggest(token.word, SPELLCHECK_DICTIONARY);
+        if (fuzzy) {
+          if (fuzzy.confidence >= 0.7) {
+            correction = fuzzy.correction;
+          } else {
+            const matchCase = (src: string, tgt: string) =>
+              src[0] === src[0].toUpperCase() ? tgt[0].toUpperCase() + tgt.slice(1) : tgt;
+            suggestions.push({
+              phrase: token.word,
+              suggestion: matchCase(token.word, fuzzy.correction),
+              tokenIds: [token.id],
+              lowConfidence: true,
+            });
+          }
+        }
+      }
+
       if (correction) {
+        const matchCase = (src: string, tgt: string) =>
+          src[0] === src[0].toUpperCase() ? tgt[0].toUpperCase() + tgt.slice(1) : tgt;
+        const finalCorrection = matchCase(token.word, correction);
         processedTokens.push({
           ...token,
-          word: correction,
+          word: finalCorrection,
           isMisspelled: false,
-          spellCorrection: correction,
+          spellCorrection: finalCorrection,
           isAccepted: true,
         });
         continue;

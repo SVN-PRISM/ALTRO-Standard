@@ -7,9 +7,10 @@
  */
 
 import { HOMONYM_DB, HOMONYM_WORD_FORMS } from '@/lib/altroData';
+import { AltroTokenManager, ACCENT } from './tokenManager';
 
-/** Символ ударения (combining acute accent) */
-export const ACCENT = '\u0301';
+/** Символ ударения (combining acute accent). Реэкспорт из tokenManager для совместимости. */
+export { ACCENT };
 const COMBINING_ACUTE = 0x0301;
 
 const VOWEL_CHAR_CODES: Record<string, number> = {
@@ -51,24 +52,19 @@ export function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-/** Пре-процессинг: оборачивает слова с \u0301 в [STRESS]...[/STRESS] для Qwen */
+/** Пре-процессинг: оборачивает слова с \u0301 в [STRESS]...[/STRESS] для Qwen. Делегирует к tokenManager. */
 export function wrapStressTags(text: string): string {
-  if (!text || !/[\u0301]/.test(text)) return text;
-  return text.replace(/([а-яёА-ЯЁ\u0301]+)/g, (match) =>
-    /[\u0301]/.test(match) ? `[STRESS]${match}[/STRESS]` : match
-  );
+  return AltroTokenManager.wrapStressTags(text);
 }
 
-/** Пост-процессинг: удаляет теги [STRESS] и [/STRESS], оставляя слова */
+/** Пост-процессинг: удаляет теги [STRESS] и [/STRESS], оставляя слова. \u0301 не затрагивается. */
 export function stripStressTags(text: string): string {
-  if (!text) return text;
-  return text.replace(/\[\/STRESS\]/g, '').replace(/\[STRESS\]/g, '');
+  return AltroTokenManager.stripStressTags(text);
 }
 
 /** Локальная версия stripStressTags (для detectHomonyms и др.) */
 export function stripStressTagsLocal(text: string): string {
-  if (!text) return text;
-  return text.replace(/\[\/STRESS\]/g, '').replace(/\[STRESS\]/g, '');
+  return AltroTokenManager.stripStressTags(text);
 }
 
 /** MORPHOLOGY FIX: исправление ошибочного склонения. "на замо́ке" → "на замке́" */
@@ -99,51 +95,63 @@ function normalizeStressToCombiningAccent(variant: string): string {
   return variant.replace(/([аеёиоуыэюяАЕЁИОУЫЭЮЯ])'/g, '$1\u0301');
 }
 
-/** Применение ударения к слову: замена ударной гласной на готовую букву из маппинга */
-export function applyAccentToWord(word: string, accentVariant: string): string {
-  const normalizedVariant = normalizeStressToCombiningAccent(accentVariant).normalize('NFD');
-  const baseWord = word.normalize('NFD').replace(/[\u0301]/g, '');
+function isVowel(ch: string): boolean {
+  return /[аеёиоуыэюяАЕЁИОУЫЭЮЯ]/.test(ch);
+}
 
-  let accentIndex = -1;
-  for (let i = 0; i < normalizedVariant.length; i++) {
-    if (normalizedVariant.charCodeAt(i) === COMBINING_ACUTE) {
-      accentIndex = i - 1;
-      break;
+/** Индекс ударной гласной в варианте (0 = первая гласная, 1 = вторая и т.д.) */
+function getStressedVowelIndex(variant: string): number {
+  const nfd = normalizeStressToCombiningAccent(variant).normalize('NFD');
+  let vowelCount = 0;
+  for (let i = 0; i < nfd.length; i++) {
+    if (nfd.charCodeAt(i) === COMBINING_ACUTE) {
+      return vowelCount > 0 ? vowelCount - 1 : 0;
+    }
+    if (isVowel(nfd[i])) {
+      vowelCount++;
     }
   }
-
-  if (accentIndex >= 0 && accentIndex < baseWord.length) {
-    const vowel = baseWord[accentIndex];
-    const stressedVowel = STRESSED_VOWEL_MAP[vowel];
-    if (stressedVowel) {
-      const before = baseWord.substring(0, accentIndex);
-      const after = baseWord.substring(accentIndex + 1);
-      return before + stressedVowel + after;
-    }
-  }
-
-  return accentVariant;
+  return 0;
 }
 
 /**
- * Строит слово с ударением: символ \u0301 вставляется СРАЗУ ПОСЛЕ ударной гласной.
- * String.fromCharCode обходит текстовые фильтры.
+ * Применяет ударение к исходному слову, сохраняя падежное окончание.
+ * Вариант 'замо́к' + исходное 'замком' → 'замко́м'.
+ * Логика: ударная гласная в варианте определяется по индексу (1-я, 2-я...),
+ * та же гласная получает ударение в исходном слове.
  */
-export function buildAccentedWordWithCharCode(baseWord: string, variantWithStress: string): string {
-  const nfd = variantWithStress.normalize('NFD');
-  let accentIdx = -1;
-  for (let i = 0; i < nfd.length; i++) {
-    if (nfd.charCodeAt(i) === COMBINING_ACUTE) {
-      accentIdx = i - 1;
-      break;
+export function applyAccentPreservingInflection(originalWord: string, variantWithStress: string): string {
+  const cleanOriginal = originalWord.normalize('NFD').replace(/[\u0301]/g, '');
+  if (!/[\u0301]/.test(normalizeStressToCombiningAccent(variantWithStress))) return originalWord;
+
+  const stressedVowelIdx = getStressedVowelIndex(variantWithStress);
+  let vowelCount = 0;
+  for (let i = 0; i < cleanOriginal.length; i++) {
+    const ch = cleanOriginal[i];
+    if (isVowel(ch)) {
+      if (vowelCount === stressedVowelIdx) {
+        const stressed = STRESSED_VOWEL_MAP[ch];
+        if (stressed) {
+          return cleanOriginal.slice(0, i) + stressed + cleanOriginal.slice(i + 1);
+        }
+      }
+      vowelCount++;
     }
   }
-  if (accentIdx < 0 || accentIdx >= baseWord.length) return variantWithStress;
-  const vowel = baseWord[accentIdx];
-  const code = VOWEL_CHAR_CODES[vowel];
-  if (code === undefined) return variantWithStress;
-  const stressed = String.fromCharCode(code, COMBINING_ACUTE);
-  return baseWord.slice(0, accentIdx) + stressed + baseWord.slice(accentIdx + 1);
+  return variantWithStress;
+}
+
+/** Применение ударения к слову: замена ударной гласной на готовую букву из маппинга */
+export function applyAccentToWord(word: string, accentVariant: string): string {
+  return applyAccentPreservingInflection(word, accentVariant);
+}
+
+/**
+ * Строит слово с ударением с сохранением флексии.
+ * Символ \u0301 ставится строго после ударной гласной по варианту.
+ */
+export function buildAccentedWordWithCharCode(originalWord: string, variantWithStress: string): string {
+  return applyAccentPreservingInflection(originalWord, variantWithStress);
 }
 
 /** Regex для поиска слова с учётом U+0301: матчит "замок" и "за́мок" */
@@ -153,7 +161,8 @@ export function buildAccentAwareWordRegex(word: string): RegExp {
   return new RegExp(`\\b${withOptionalAccent}\\b`, 'giu');
 }
 
-/** STRESS ONLY: удаляет все маркеры, скобки с вариантами. Допустим только \u0301. */
+/** STRESS ONLY: удаляет все маркеры, скобки с вариантами. Допустим только \u0301.
+ * ЗАЩИТА: \u0301 НЕ удаляется — метод не содержит replace, затрагивающий combining characters. */
 export function stripAdaptationMarkers(text: string): string {
   if (!text) return text;
   return text

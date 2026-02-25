@@ -12,7 +12,8 @@ import type { DomainWeights } from '@/lib/altroData';
 import { SPELLCHECK_CORRECTIONS, HOMONYM_DB, HOMONYM_WORD_FORMS } from '@/lib/altroData';
 import type { WordDefinitions } from './dictionary';
 import { calculateWeights, getSemanticDisplacementDirective, hasActiveDomainWeights } from './vectorEngine';
-import { wrapStressTags, stripStressTags, applyDeclensionFixes, extractAccentedWords, countWords } from './textUtils';
+import { AltroTokenManager } from './tokenManager';
+import { applyDeclensionFixes, extractAccentedWords, countWords } from './textUtils';
 
 /** Слова с двойным смыслом (омонимы), включая словоформы: замок, замка, замке и т.д. */
 const HOMONYM_FORMS = new Set([
@@ -280,7 +281,7 @@ export interface HomonymScanResult {
  */
 export function detectHomonyms(text: string): string[] {
   if (!text?.trim()) return [];
-  const cleanText = stripStressTags(text);
+  const cleanText = AltroTokenManager.stripStressTags(text);
   const found = new Set<string>();
   const combining = '[\\u0300-\\u036f]*';
   for (const form of HOMONYM_FORMS) {
@@ -430,7 +431,8 @@ const DEFAULT_OLLAMA_CONFIG: Required<OllamaConfig> = {
   model: 'qwen2.5:14b',
 };
 
-export { wrapStressTags, stripStressTags, applyDeclensionFixes, extractAccentedWords } from './textUtils';
+export { applyDeclensionFixes, extractAccentedWords } from './textUtils';
+export { AltroTokenManager };
 
 /** Парсинг JSON-ответа Mirror: {"text": "..."}. При неудаче — fallback. */
 function extractMirrorTextFromJson(rawContent: string, fallback: string): string {
@@ -453,7 +455,7 @@ function applyLibraPostProcessing(
   finalText: string,
   params: { mode: PresetMode; calibration?: AltroCalibration; text?: string }
 ): string {
-  let result = stripStressTags(finalText);
+  let result = AltroTokenManager.stripStressTags(finalText);
   result = applyDeclensionFixes(result);
   // Защита изоморфизма: если длина ответа LLM (в словах) не совпадает с входом — вернуть оригинал
   if (params.mode === 'mirror' && params.text != null && countWords(result) !== countWords(params.text)) {
@@ -509,7 +511,7 @@ export class AltroOrchestrator {
       systemPrompt = `[Session: ${params.sessionId}]\n${systemPrompt}`;
     }
 
-    const textWithStressTags = wrapStressTags(text);
+    const textWithStressTags = AltroTokenManager.wrapStressTags(text);
     const accentedWords = extractAccentedWords(text);
     let userContent = textWithStressTags;
     if (accentedWords.length > 0) {

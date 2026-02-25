@@ -17,6 +17,7 @@ import {
   calculateScenarioWeights,
 } from '@/lib/altro/vectorEngine';
 import { escapeHtml, applyAccentToWord, stripStressTagsLocal, buildAccentAwareWordRegex, hasStressMark } from '@/lib/altro/textUtils';
+import { AltroTokenManager, type TextToken } from '@/lib/altro/tokenManager';
 
 /** Токен: слово с метаданными для обработки */
 interface Token {
@@ -28,23 +29,8 @@ interface Token {
   isTranscreated: boolean;
 }
 
-/** TextToken: Глобальный токен для ALTRO Orchestrator */
-export interface TextToken {
-  id: number; // уникальный ID токена
-  word: string; // слово или знак препинания/пробел
-  isHomonym: boolean; // является ли омонимом
-  resolvedAccent?: string; // разрешенное значение с ударением (например, "за́мок")
-  options?: string[]; // варианты значений из HOMONYM_DB (если isHomonym === true)
-  isPunctuation?: boolean; // знак препинания
-  isWhitespace?: boolean; // пробел
-  isMisspelled?: boolean; // ошибка орфографии (не найдено в словаре)
-  // SMART CLEAN MIRROR: поля для исправлений
-  semanticReplacement?: string; // принятое семантическое исправление (например, "и мама" вместо "имама")
-  spellCorrection?: string; // принятое орфографическое исправление (например, "встретились" вместо "встетились")
-  isAccepted?: boolean; // флаг принятия исправления (true после нажатия "ПРИНЯТЬ")
-  resolvedText?: string; // разрешенный текст с ударением (для омонимов)
-  isValidated?: boolean; // флаг валидации: слово помечено как [Validated] и будет пропущено при повторном скане
-}
+/** TextToken: реэкспорт из tokenManager для совместимости */
+export type { TextToken };
 
 /** Semantic Suggestion: предложение исправления на основе контекста */
 export interface SemanticSuggestion {
@@ -53,9 +39,6 @@ export interface SemanticSuggestion {
   tokenIds: number[]; // ID токенов, которые нужно заменить
   lowConfidence?: boolean; // N-gram: низкий коэффициент доверия — не применять принудительно, только пометить сиреневым
 }
-
-/** Символ ударения (combining acute accent) — НЕ отделять от буквы при токенизации */
-const ACCENT = '\u0301';
 
 export { escapeHtml, applyAccentToWord, buildAccentAwareWordRegex, stripStressTagsLocal, stripAdaptationMarkers, ensureMandatoryStress } from '@/lib/altro/textUtils';
 
@@ -117,28 +100,15 @@ function matchGender(word: string): 'женский' | 'мужской' | 'ср�
 
 /** Функция токенизации: разбивает текст на массив слов. U+0301 сохраняется внутри слова. */
 function tokenize(text: string): Token[] {
-  const tokens: Token[] = [];
-  const wordChar = `[а-яёА-ЯЁ${ACCENT}]`;
-  const regex = new RegExp(`(\\s+|${wordChar}+(?:-${wordChar}+)*|[.!?,;:()\\[\\]]+|[^\\sа-яёА-ЯЁ${ACCENT}]+)`, 'gi');
-  let match;
-  
-  while ((match = regex.exec(text)) !== null) {
-    const value = match[0];
-    const isWord = new RegExp(`^${wordChar}+(?:-${wordChar}+)*$`, 'i').test(value);
-    const isPunct = /^[.!?,;:()\[\]]+$/.test(value);
-    const isWhitespace = /^\s+$/.test(value);
-    
-    tokens.push({
-      original: value,
-      transformed: value,
-      isReplaced: false,
-      isTranscreated: false,
-      isPunctuation: isPunct,
-      isWhitespace: isWhitespace,
-    });
-  }
-  
-  return tokens;
+  const altroTokens = AltroTokenManager.tokenize(text);
+  return altroTokens.map((t) => ({
+    original: t.word,
+    transformed: t.word,
+    isReplaced: false,
+    isTranscreated: false,
+    isPunctuation: t.type === 'punct',
+    isWhitespace: t.type === 'space',
+  }));
 }
 
 /** Функция детокенизации: собирает токены обратно в строку */
@@ -173,66 +143,63 @@ function detokenize(tokens: Token[]): string {
 
 export { calculateWeights, getActivePattern, areWeightsInStandby, calculateScenarioWeights } from '@/lib/altro/vectorEngine';
 
-/** Глобальная токенизация текста для ALTRO Orchestrator. U+0301 сохраняется внутри слова. */
+/**
+ * Токенизация для UI: базовая разбивка через AltroTokenManager + обогащение омонимами.
+ * Символы \u0301 сохраняются (tokenManager не изменяет текст).
+ */
 export function tokenizeText(text: string): TextToken[] {
+  const baseTokens = AltroTokenManager.tokenize(text);
   const tokens: TextToken[] = [];
   let tokenId = 0;
-  
-  // Слова могут содержать U+0301 (ударение) — не разбивать. [а-яёА-ЯЁ\u0301]+
-  const wordChar = `[а-яёА-ЯЁ${ACCENT}]`;
-  const regex = new RegExp(`(\\s+|${wordChar}+(?:-${wordChar}+)*|[.!?,;:()\\[\\]]+|[^\\sа-яёА-ЯЁ${ACCENT}]+)`, 'gi');
-  let match;
-  
-  while ((match = regex.exec(text)) !== null) {
-    const value = match[0];
-    const isWord = new RegExp(`^${wordChar}+(?:-${wordChar}+)*$`, 'i').test(value);
-    const isPunct = /^[.!?,;:()\[\]]+$/.test(value);
-    const isWhitespace = /^\s+$/.test(value);
-    
+
+  for (const t of baseTokens) {
+    const value = t.word;
+    const isWord = t.type === 'word';
+
     if (isWord) {
       const lowerWord = value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
       const baseForHomonym = HOMONYM_WORD_FORMS[lowerWord] ?? lowerWord;
-      const homonymEntry = HOMONYM_DB.find(entry => entry.base.toLowerCase() === baseForHomonym);
+      const homonymEntry = HOMONYM_DB.find((entry) => entry.base.toLowerCase() === baseForHomonym);
       const isHomonym = !!homonymEntry && !hasStressMark(value);
-      
-      // SPELLCHECK LAYER: Проверка орфографии (базовая форма без ударения)
-      const isMisspelled = !SPELLCHECK_DICTIONARY.has(lowerWord) && 
-                          !PROPER_NOUNS.has(value) && 
-                          !hasStressMark(value); // Слова с ударением считаются правильными
-      
+
+      const isMisspelled =
+        !SPELLCHECK_DICTIONARY.has(lowerWord) &&
+        !PROPER_NOUNS.has(value) &&
+        !hasStressMark(value);
+
       const token: TextToken = {
         id: tokenId++,
         word: value,
-        isHomonym: isHomonym,
+        type: t.type,
+        isHomonym,
         isPunctuation: false,
         isWhitespace: false,
-        isMisspelled: isMisspelled,
+        isMisspelled,
+        hasAccent: t.hasAccent,
+        isLocked: t.isLocked,
       };
-      
-      // Если это омоним (включая словоформы: замка, замке и т.д.), добавляем варианты из HOMONYM_DB
+
       if (isHomonym && homonymEntry) {
-        token.options = homonymEntry.variants.map(v => v.word);
+        token.options = homonymEntry.variants.map((v) => v.word);
       }
-      
-      // Если слово уже имеет ударение, сохраняем его как resolvedAccent
       if (hasStressMark(value)) {
         token.resolvedAccent = value;
-        token.isHomonym = false; // Слово с ударением не требует уточнения
+        token.isHomonym = false;
       }
-      
+
       tokens.push(token);
     } else {
-      // Пробелы и знаки препинания
       tokens.push({
         id: tokenId++,
         word: value,
+        type: t.type,
         isHomonym: false,
-        isPunctuation: isPunct,
-        isWhitespace: isWhitespace,
+        isPunctuation: t.type === 'punct',
+        isWhitespace: t.type === 'space',
       });
     }
   }
-  
+
   return tokens;
 }
 
@@ -413,36 +380,37 @@ function orchestrateText(
     };
   }
   
-  // Проверка омонимов для Synchronizer Lingua
+  // Проверка омонимов: для mirror и bridge — флаг requiresClarification для подсветки UI
   let requiresClarification = false;
-  if (preset === 'bridge') {
-    const homonyms = detectHomonymsInText(text);
-    requiresClarification = homonyms.length > 0;
+  const homonyms = detectHomonymsInText(text);
+  if (homonyms.length > 0) {
+    requiresClarification = true;
   }
-  
+
   // ШАГ 1: НОРМАЛИЗАЦИЯ
   let normalized = text;
-  
+
+  // MIRROR: только базовая нормализация пробелов, БЕЗ замен слов. Метаданные омонимов — через requiresClarification.
+  if (preset === 'mirror') {
+    normalized = normalized.trim().replace(/\s+/g, ' ');
+    normalized = normalized.replace(/\)([а-яёА-ЯЁ\u0301])/g, ') $1'); // пробел после )
+    return { text: normalized, requiresClarification };
+  }
+
   normalized = normalized.replace(/(папа)\s*(и)\s*(мама)|(папаимама)/gi, (match) => {
     const isCapitalized = match[0] === match[0].toUpperCase();
     return isCapitalized ? 'Папа и мама' : 'папа и мама';
   });
-  
+
   normalized = normalized.replace(/(Ростов)\s*[-]*\s*(на)\s*[-]*\s*(Дону)|(Ростовенадону)|(Роственадону)/gi, (match) => {
     const isCapitalized = match[0] === match[0].toUpperCase();
     return isCapitalized ? 'Ростове-на-Дону' : 'ростове-на-Дону';
   });
-  
+
   normalized = normalized.replace(/(встеча)/gi, (match) => {
     const isCapitalized = match[0] === match[0].toUpperCase();
     return isCapitalized ? 'Встреча' : 'встреча';
   });
-  
-  // ПРИОРИТЕТ РЕЖИМОВ: Если режим == 'mirror', возвращаем результат на этом этапе
-  if (preset === 'mirror') {
-    normalized = normalized.replace(/\)([а-яёА-ЯЁ\u0301])/g, ') $1'); // U+0301 сохраняется
-    return { text: normalized };
-  }
   
   // Режим SLANG: приоритет отдается упрощениям
   if (preset === 'slang') {
