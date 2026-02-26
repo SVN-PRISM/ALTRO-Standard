@@ -163,9 +163,10 @@ export function buildSystemPrompt(params: BuildPromptParams): string {
 
 ALTRO LIBRA: Анализируй входящий текст на юридические и этические риски (согласно законодательству РФ и нормам безопасности). При обнаружении потенциально сенситивного контента сохраняй точность воспроизведения, но не разделяй данные взгляды.
 
-VECTOR DISPLACEMENT: Домены — не добавление слов, а искривление семантического поля. [STRESS] и \u0301 — неизменные константы. Вокруг них строится новый контекст. Результат: изоморфный (структура сохранена), семантически перекалиброванный.
+VECTOR DISPLACEMENT: Домены — не добавление слов, а искривление семантического поля. <fixed> и \u0301 — неизменные константы. Вокруг них строится новый контекст. Результат: изоморфный (структура сохранена), семантически перекалиброванный.
 
-ACCENTS: U+0301 и [STRESS] — неизменны. Слова с \u0301 — якорь: не склонять, не менять форму.
+FIXED: Слова внутри тегов <fixed> изменять запрещено. Сохраняй их морфологию и ударения в итоговом результате.
+ACCENTS: U+0301 и <fixed> — неизменны. Слова с \u0301 — якорь: не склонять, не менять форму.
 OPR: Ударения пользователя — закон. Необычный контекст (напр. «доро́г» как ценность) — оправдать, не менять структуру.
 ISOMORPHISM: НЕ означает идентичность слов. Ты ОБЯЗАН менять эпитеты и контекст согласно весам Доменов, сохраняя НЕИЗМЕННЫМИ только токены с \u0301 и общую структуру. 1 слово = 1 концепт. Не добавлять объекты (туманы, горы).
 MORPHOLOGY: Замо́к (запор) → на замке́; за́мок (строение) → на за́мке.
@@ -511,11 +512,11 @@ export class AltroOrchestrator {
       systemPrompt = `[Session: ${params.sessionId}]\n${systemPrompt}`;
     }
 
-    const textWithStressTags = AltroTokenManager.wrapStressTags(text);
+    const textWithFixedTags = AltroTokenManager.wrapTextForQwen(text);
     const accentedWords = extractAccentedWords(text);
-    let userContent = textWithStressTags;
+    let userContent = textWithFixedTags;
     if (accentedWords.length > 0) {
-      userContent += `\n[STRESS] Сохрани: ${accentedWords.join(', ')}`;
+      userContent += `\nСохрани ударения: ${accentedWords.join(', ')}`;
     }
 
     const base = {

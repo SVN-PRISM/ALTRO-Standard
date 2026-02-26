@@ -14,7 +14,8 @@ export interface TextToken {
   isPunctuation: boolean;
   isWhitespace: boolean;
   hasAccent?: boolean;
-  isLocked?: boolean;
+  /** TOKEN_LOCK_MECHANICS: true = оборачивать в <fixed> при передаче в Qwen. По умолчанию false. */
+  isLocked: boolean;
   /** Опциональные поля для совместимости с UI и altroLogic */
   resolvedAccent?: string;
   options?: string[];
@@ -83,25 +84,37 @@ export class AltroTokenManager {
         isPunctuation: type === 'punct',
         isWhitespace: type === 'space',
         hasAccent,
-        isLocked,
+        isLocked: type === 'word' ? !!isLocked : false,
       });
     }
 
     return tokens;
   }
 
-  /** Оборачивает слова с ударением в [STRESS]...[/STRESS] для LLM */
+  /** Оборачивает слова с ударением в [STRESS]...[/STRESS] для LLM (legacy) */
   static wrapStressTags(text: string): string {
-    if (!text || !/[\u0301]/.test(text)) return text;
+    return this.wrapTextForQwen(text);
+  }
+
+  /**
+   * TOKEN_LOCK_MECHANICS: Токены с isLocked === true оборачиваются в <fixed>...</fixed>.
+   * Используется при формировании промпта для Qwen.
+   */
+  static wrapTextForQwen(text: string): string {
+    if (!text) return text;
     const tokens = this.tokenize(text);
     return tokens
-      .map((t) => (t.type === 'word' && t.isLocked ? `[STRESS]${t.word}[/STRESS]` : t.word))
+      .map((t) => (t.type === 'word' && t.isLocked ? `<fixed>${t.word}</fixed>` : t.word))
       .join('');
   }
 
-  /** Удаляет теги [STRESS] и [/STRESS]. \u0301 не затрагивается. */
+  /** Удаляет теги [STRESS], [/STRESS], <fixed>, </fixed>. \u0301 не затрагивается. */
   static stripStressTags(text: string): string {
     if (!text) return text;
-    return text.replace(/\[\/STRESS\]/g, '').replace(/\[STRESS\]/g, '');
+    return text
+      .replace(/\[\/STRESS\]/g, '')
+      .replace(/\[STRESS\]/g, '')
+      .replace(/<\/fixed>/g, '')
+      .replace(/<fixed>/g, '');
   }
 }
