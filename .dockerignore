@@ -1,0 +1,9 @@
+node_modules
+.next
+.git
+archive
+test_lab
+*.zip
+.env
+.env.local
+.continue

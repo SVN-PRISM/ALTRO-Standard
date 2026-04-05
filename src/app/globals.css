@@ -1,5 +1,8 @@
 /* MIT License | Copyright (c) 2026 SERGEI NAZARIAN (SVN) | ALTRO: Semantic Orchestration Layer */
 
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Armenian:wght@400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -16,18 +19,20 @@ body {
   height: 100%;
   max-height: 100vh;
   overflow: hidden;
-  background-color: #e5e7eb;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  background-color: #1A1A1B;
+  color: #e5e7eb;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+html.light body {
+  background-color: #F5F5F5;
+  color: #1A1A1B;
+}
+
 /* Thin vertical slider */
 .vertical-slider {
-  -webkit-appearance: slider-vertical;
-  appearance: slider-vertical;
   background: linear-gradient(to top, #3b82f6 0%, #3b82f6 var(--value, 50%), #e5e7eb var(--value, 50%), #e5e7eb 100%);
   border-radius: 9999px;
   outline: none;
@@ -122,8 +127,6 @@ body {
 /* OPR: тонкая линия (2px), аккуратный бегунок (8px), сиреневая ручка */
 .vertical-slider-lilac,
 .vertical-slider-lilac[data-opr-prism] {
-  -webkit-appearance: slider-vertical;
-  appearance: slider-vertical;
   background: linear-gradient(to top, #C8A2C8 0%, #C8A2C8 var(--value, 50%), #4b5563 var(--value, 50%), #4b5563 100%) !important;
   border-radius: 9999px;
   outline: none;
@@ -180,8 +183,6 @@ body {
 
 /* Management: тонкие вертикальные слайдеры (2px), аккуратный бегунок (6px) */
 .vertical-slider-gray {
-  -webkit-appearance: slider-vertical;
-  appearance: slider-vertical;
   background: linear-gradient(to top, #6b7280 0%, #6b7280 var(--value, 50%), #9ca3af var(--value, 50%), #9ca3af 100%);
   border-radius: 9999px;
   outline: none;
@@ -363,10 +364,92 @@ body {
   border: 1px solid rgba(200, 162, 200, 0.6);
 }
 
+/* Glass Engine: анимация «сборки» при появлении результата в OutputHub */
+@keyframes output-assembly {
+  0% { opacity: 0.3; transform: translateY(4px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.output-assembly {
+  animation: output-assembly 0.4s ease-out forwards;
+}
+
+/* Glass Engine: Refined Resizer — invisible by default, neon line «разжигается» на hover */
+.glass-resizer {
+  width: 5px !important;
+  min-width: 5px !important;
+  background: transparent !important;
+  cursor: col-resize !important;
+  flex-shrink: 0 !important;
+  position: relative;
+}
+.glass-resizer::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: transparent;
+  transform: translateX(-50%);
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+.glass-resizer:hover::before,
+.glass-resizer[data-resize-handle-state="drag"]::before {
+  background-color: #007AFF;
+  box-shadow: 0 0 6px #007AFF;
+}
+
+/* Вертикальный сплиттер: Монитор Трафарета ↔ Смысловой Шлюз (правая колонка) */
+.glass-resizer-vertical {
+  height: 10px !important;
+  min-height: 10px !important;
+  width: 100% !important;
+  background: transparent !important;
+  cursor: row-resize !important;
+  flex-shrink: 0 !important;
+  position: relative;
+  touch-action: none !important;
+  user-select: none !important;
+  pointer-events: auto !important;
+  z-index: 30;
+}
+.glass-resizer-vertical::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: transparent;
+  transform: translateY(-50%);
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+  pointer-events: none;
+}
+.glass-resizer-vertical:hover::before,
+.glass-resizer-vertical[data-resize-handle-state="drag"]::before {
+  background-color: #007aff;
+  box-shadow: 0 0 6px #007aff;
+}
+
+/* Glass Engine: cross-highlight при наведении на [ID: N] в StencilMonitor */
+@keyframes cross-highlight-pulse {
+  0%, 100% { box-shadow: 0 0 8px currentColor; opacity: 1; }
+  50% { box-shadow: 0 0 16px currentColor; opacity: 0.95; }
+}
+.cross-highlight-pulse {
+  animation: cross-highlight-pulse 0.8s ease-in-out infinite;
+  transition: box-shadow 0.2s ease;
+}
+
 /* SCAN 2.0: лёгкое мерцание границ при синтезе */
 @keyframes synthesis-border-flicker {
   0%, 100% { box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.3); }
   50% { box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.6); }
+}
+
+@keyframes voicePulse {
+  0%, 100% { opacity: 1; transform: translateY(-50%) scale(1); }
+  50% { opacity: 0.9; transform: translateY(-50%) scale(1.08); }
 }
 .synthesis-scanning {
   animation: synthesis-border-flicker 0.8s ease-in-out infinite;
@@ -429,8 +512,6 @@ body {
 
 /* OPR: вертикальный, тонкая тёмно-серая направляющая, сиреневый бегунок */
 .altro-slider-opr {
-  -webkit-appearance: slider-vertical;
-  appearance: slider-vertical;
   writing-mode: vertical-lr;
   transform: rotate(180deg);
   width: 2px;
@@ -464,8 +545,6 @@ body {
 
 /* ALTRO v1.1: vertical slider — track w-1 bg-gray-300, thumb w-4 h-4 rounded-full bg-purple-600 */
 .altrov-slider-v {
-  -webkit-appearance: slider-vertical;
-  appearance: slider-vertical;
   writing-mode: vertical-lr;
   transform: rotate(180deg);
   width: 4px;
@@ -545,4 +624,30 @@ body {
 }
 .nexus-command-input::placeholder {
   color: rgba(200, 162, 200, 0.6);
+}
+
+/* ALTRO Token Status: визуализация статуса токенов */
+.altro-token-locked {
+  border: 1px solid #D4AF37;
+  border-radius: 2px;
+  padding: 0 1px;
+  transition: box-shadow 0.2s ease;
+}
+.altro-token-locked:hover {
+  box-shadow: 0 0 6px rgba(212, 175, 55, 0.5);
+}
+
+.altro-token-scanned {
+  border: 1px dashed #A9A9A9;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+@media print {
+  .altro-token-locked,
+  .altro-token-scanned {
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
 }
