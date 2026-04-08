@@ -3,7 +3,12 @@
 /** Соответствие ALTRO_CORE «Доказательство Назаряна»: без \b и ^ в ограничителях; *? допускает пустое тело ($$$$). */
 export const FORMULA_LATEX_DISPLAY = String.raw`\$\$(?:[\s\S]*?)\$\$`;
 export const FORMULA_LATEX_INLINE = String.raw`\$(?:[\s\S]+?)\$`;
-export const FORMULA_BRACKET = '\\[' + '(?:[\\s\\S]+?)' + '\\]';
+/**
+ * Bracket formulas with one-level nested support:
+ * - matches `[a+b]`, `[zone [inner]]`, `[a][b]` as separate adjacent spans
+ * - avoids orphan captures like `[zone [inner]` (missing closing bracket).
+ */
+export const FORMULA_BRACKET = String.raw`\[(?:[^[\]]|\[[^[\]]*\])+\]`;
 export const FORMULA_PAREN = '\\(' + '(?:[\\s\\S]+?)' + '\\)';
 
 const MAX_REGEX_EXEC_ITER = 100;

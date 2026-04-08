@@ -338,6 +338,8 @@ function resolveEffectiveType(
   | 'kpi_metric'
   | 'id_tag'
   | 'standard_code'
+  | 'pii_email'
+  | 'semantic_anchor'
   | 'unknown' {
   if (
     declared === 'date' ||
@@ -353,7 +355,9 @@ function resolveEffectiveType(
     declared === 'formula_inline' ||
     declared === 'kpi_metric' ||
     declared === 'id_tag' ||
-    declared === 'standard_code'
+    declared === 'standard_code' ||
+    declared === 'pii_email' ||
+    declared === 'semantic_anchor'
   ) {
     return declared;
   }
@@ -403,6 +407,10 @@ export function microTranscreate(
     case 'id_tag':
       return sanitizeForTagDisplay(v);
     case 'standard_code':
+      return sanitizeForTagDisplay(v);
+    case 'pii_email':
+      return sanitizeForTagDisplay(v);
+    case 'semantic_anchor':
       return sanitizeForTagDisplay(v);
     default:
       return sanitizeForTagDisplay(localizePlainNumber(v, locale));

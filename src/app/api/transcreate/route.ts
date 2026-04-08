@@ -9,7 +9,12 @@
 
 import { freemem } from 'node:os';
 import { Agent } from 'undici';
-import { formatIntentWeightsForLog, resolveWeightsFromIntent } from '@core/IntentOrchestrator';
+import {
+  formatIntentWeightsForLog,
+  resolveWeightsFromIntent,
+  stripAltroDirectivesFromText,
+} from '@core/IntentOrchestrator';
+import { maskUserContentWithPrepareStencil } from '@core/transcreateUserContentMask';
 import { resolveTargetLanguageFromRequestBody } from '@core/stencilTargetLanguage';
 import { SovereignController } from '@core/SovereignController';
 import type { DomainWeights } from '@/lib/altroData';
@@ -60,6 +65,8 @@ function maskMessages(
   targetLanguage: string
 ): void {
   for (const msg of messages) {
+    /** Только user-текст: системный промпт не гоняем через Кристалл/Masker (ускорение, типично 75s→секунды). */
+    if (msg.role !== 'user') continue;
     if (typeof msg.content === 'string' && msg.content.trim()) {
       console.log(
         '[PIPELINE CHECK][API] Raw length before mask:',
@@ -71,8 +78,10 @@ function maskMessages(
         `[ALTRO][Stage:pre-mask] role=${msg.role} — исходный текст IPA-пакета / сообщения до маскирования:\n`,
         msg.content
       );
-      /** prepareStencil получает полный content (без trim); replace/sanitize перед Masker не применяется. */
-      msg.content = controller.prepareStencil(msg.content, targetLanguage, undefined);
+      /** Блок `[USER_DIRECTIVE]…\n\n` не маскируется (см. partitionUserDirectiveForMasking). */
+      msg.content = maskUserContentWithPrepareStencil(msg.content, (body) =>
+        controller.prepareStencil(body, targetLanguage, undefined)
+      );
     }
   }
 }
@@ -179,7 +188,26 @@ export async function POST(request: Request) {
     if (!userIntentRaw && bodyObj?.messages) {
       userIntentRaw = extractUserDirectiveFromMessages(bodyObj.messages);
     }
-    const intentWeights = resolveWeightsFromIntent(userIntentRaw);
+
+    /**
+     * SDK: сначала сырой user.content → stripAltroDirectivesFromText (до Кристалла/Masker),
+     * чтобы `[ALTRO: …]` и веса не попали в трафарет и не порождали лишние {{IPA_*}}.
+     */
+    const altroInnersFromMessages: string[] = [];
+    if (Array.isArray(bodyObj?.messages)) {
+      for (const m of bodyObj.messages as Array<{ role?: string; content?: string }>) {
+        if (m?.role !== 'user' || typeof m.content !== 'string' || !m.content.trim()) continue;
+        const { text, strippedInners } = stripAltroDirectivesFromText(m.content);
+        altroInnersFromMessages.push(...strippedInners);
+        m.content = text;
+      }
+    }
+
+    const intentParts = [
+      userIntentRaw.trim(),
+      ...altroInnersFromMessages.map((inner) => `[ALTRO:${inner}]`),
+    ].filter(Boolean);
+    const intentWeights = resolveWeightsFromIntent(intentParts.join('\n'));
     console.log(
       `[ALTRO][Intent-Orchestrator] Directive detected: '${userIntentRaw.slice(0, 240)}' -> Calculated Matrix:`,
       formatIntentWeightsForLog(intentWeights)
@@ -221,6 +249,13 @@ export async function POST(request: Request) {
         });
       }
       maskMessages(messages, stencilController, stencilTargetLang);
+      for (const m of messages as Array<{ role: string; content?: string }>) {
+        if (m.role !== 'user' || typeof m.content !== 'string') continue;
+        console.log(
+          '[SDK_EXIT_GATEWAY] user message (post-maskMessages, pre-Ollama body):\n',
+          m.content
+        );
+      }
       console.log(
         '[ALTRO][Stage:label-pre-localization] Завершено: все захваченные метки предварительно локализованы (Mirror, без весов доменов); далее — основная транскреация (Ollama).'
       );

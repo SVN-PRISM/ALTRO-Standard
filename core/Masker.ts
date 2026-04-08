@@ -71,12 +71,29 @@ const PATTERN_SPECS_SECONDARY: Array<{ source: string; flags: string; type: stri
     patternName: 'money_mag',
   },
   { source: String.raw`\d+${DECIMAL_FRAC}%`, flags: 'g', type: 'percent', patternName: 'percent' },
+  /** PII email before anchors/numbers: mask fully as immutable brick. */
+  {
+    source: String.raw`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`,
+    flags: 'g',
+    type: 'pii_email',
+    patternName: 'pii_email',
+  },
   /** Коды стандартов ISO9001 и т.п. — до generic_number, чтобы не откусывать только цифры. */
   {
     source: String.raw`\bISO\d+\b`,
     flags: 'gi',
     type: 'standard_code',
     patternName: 'iso_standard_code',
+  },
+  /**
+   * snake_case / kebab-case идентификаторы (Neural_Link и т.д.): буква обязательна, чтобы не пересекаться с ISO-датами.
+   * Базовая форма: `[a-zA-Z0-9]+(?:[_-][a-zA-Z0-9]+)+`.
+   */
+  {
+    source: String.raw`[a-zA-Z0-9]*[a-zA-Z][a-zA-Z0-9]*(?:[_-][a-zA-Z0-9]+)+`,
+    flags: 'g',
+    type: 'semantic_anchor',
+    patternName: 'semantic_anchor',
   },
   {
     source: String.raw`\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b`,
@@ -144,12 +161,42 @@ function patternMatchesSomewhere(patternSource: string, flags: string, text: str
 export const IPA_LABEL_REGEX = /\{\{\s*IPA_(\d+)(?:\s*:\s*[^}]*)?\s*\}\}/g;
 
 /**
+ * Литералы семантического слоя (SemanticFirewall после Кристалла) — до RegExp-Маскера должны стать {{IPA_N}},
+ * иначе finalize / StreamInjector не подставят display.
+ */
+const SEMANTIC_MASK_LITERAL_SRC = String.raw`\[ID:MASK_[a-z_]+\]`;
+
+/**
  * Masker — Трафарет: извлекает сегменты, micro-transcreate в целевой язык,
  * в vault кладётся display (цель) + source (оригинал); в тексте — только {{IPA_N}}.
  * Один проход по тексту после слияния пересечений: без цепочки .replace по паттернам.
  */
 export class Masker {
   constructor(private vault: DataVault) {}
+
+  /** Семантические литералы `[ID:MASK_*]` как span-узлы, чтобы нумерация IPA шла строго слева направо. */
+  private collectSemanticMaskSpans(text: string): RawSpan[] {
+    const spans: RawSpan[] = [];
+    if (!text.includes('[ID:MASK_')) return spans;
+    const re = new RegExp(SEMANTIC_MASK_LITERAL_SRC, 'gi');
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const full = m[0];
+      if (full.length === 0) {
+        if (re.lastIndex === m.index) re.lastIndex++;
+        continue;
+      }
+      const dom = full.match(/\[ID:MASK_([a-z_]+)\]/i)?.[1] ?? 'unknown';
+      spans.push({
+        start: m.index,
+        end: m.index + full.length,
+        text: full,
+        type: `semantic_mask_${dom}`,
+        patternName: 'semantic_mask_literal',
+      });
+    }
+    return spans;
+  }
 
   /**
    * Formula-Magnet — делегирует в `formulaMagnet.ts` (тот же алгоритм, что UI EntityScanner).
@@ -238,8 +285,13 @@ export class Masker {
       (s) => !formulaMerged.some((f) => spanOverlaps(s, f))
     );
 
-    const raw = [...formulaRaw, ...secondaryRaw];
-    const merged = this.mergeSpans([...formulaMerged, ...secondaryFiltered]);
+    const semanticRaw = this.collectSemanticMaskSpans(text);
+    const semanticFiltered = semanticRaw.filter(
+      (s) => !formulaMerged.some((f) => spanOverlaps(s, f))
+    );
+
+    const raw = [...formulaRaw, ...secondaryRaw, ...semanticRaw];
+    const merged = this.mergeSpans([...formulaMerged, ...secondaryFiltered, ...semanticFiltered]);
 
     console.log('[ALTRO][Masker] Спецификации RegExp (шаблоны Masker):', PATTERN_SPECS_FOR_LOG);
     console.log(
@@ -286,7 +338,9 @@ export class Masker {
           `[ALTRO][Stage:Unit-Magnet] Captured Unit: ${source} -> ID: ${uid ?? 'unknown'}${dis ? ` — ${dis}` : ''}`
         );
       }
-      const display = microTranscreate(source, detectedType, targetLanguage, weights);
+      const display = detectedType.startsWith('semantic_mask_')
+        ? source
+        : microTranscreate(source, detectedType, targetLanguage, weights);
       if (process.env.ALTRO_AUDIT_STENCIL === '1') {
         console.log('[ALTRO_AUDIT][Masker] microTranscreate', {
           index: i,
