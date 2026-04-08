@@ -1,12 +1,12 @@
 /**
- * Golden Semantic Anchors — ALTRO IP v1.3 (дистилляция смыслов для Forge).
+ * Golden Semantic Anchors — ALTRO IP v1.4 (дистилляция смыслов для Forge).
  * Схема совместима с экспортом в distilledAnchors.json и взвешенными центроидами.
  *
  * Веса при сборке: core=1.0, nuances=0.7, isoMarkers=1.0
  */
 
 export const DISTILLED_META = {
-  version: '1.3',
+  version: '1.4',
   forgeLabel: 'ALTRO-IP-distilled',
   distillationNote:
     'Экспертная калибровка терминов по 13 доменам (RU/EN/DE/FR/IT/ES/HY/Latin + ISO/CI). ' +
@@ -14,13 +14,15 @@ export const DISTILLED_META = {
   languages: ['ru', 'en', 'de', 'fr', 'it', 'es', 'hy', 'la'] as const,
 };
 
-export const CRITICAL_INJECTION_V13: readonly string[] = [
+/** Критическая инъекция для словаря Forge (v1.4: + латинские опоры). */
+export const CRITICAL_INJECTION_V14: readonly string[] = [
   'смысл',
   'meaning',
   'իմաստ',
   'imast',
   'намерение',
   'intent',
+  'intentio',
   'մտադրություն',
   'mtadrutyun',
   'iso9001',
@@ -30,7 +32,12 @@ export const CRITICAL_INJECTION_V13: readonly string[] = [
   'cd',
   'finalitas',
   'предумышленность',
+  'conscientia',
+  'secretum',
 ];
+
+/** @deprecated Используйте {@link CRITICAL_INJECTION_V14} */
+export const CRITICAL_INJECTION_V13 = CRITICAL_INJECTION_V14;
 
 export type DistilledDomainBlock = {
   core: readonly string[];
@@ -44,7 +51,7 @@ export const DISTILLED_ANCHORS_PAYLOAD: {
 } = {
   meta: {
     ...DISTILLED_META,
-    criticalInjection: CRITICAL_INJECTION_V13,
+    criticalInjection: CRITICAL_INJECTION_V14,
   },
   domains: {
     economics: {
@@ -196,7 +203,6 @@ export const DISTILLED_ANCHORS_PAYLOAD: {
         'storia',
         'historia',
         'pasado',
-        'historia',
         'պատմություն',
         'memoria',
         'chronica',
@@ -231,11 +237,9 @@ export const DISTILLED_ANCHORS_PAYLOAD: {
         'Kultur',
         'Erbe',
         'Brauch',
-        'culture',
         'patrimoine',
         'cultura',
         'patrimonio',
-        'cultura',
         'մշակույթ',
         'cultus',
         'mos',
@@ -275,7 +279,6 @@ export const DISTILLED_ANCHORS_PAYLOAD: {
         'arte',
         'bellezza',
         'estética',
-        'arte',
         'գեղագիտություն',
         'pulchritudo',
         'ars',
@@ -309,9 +312,6 @@ export const DISTILLED_ANCHORS_PAYLOAD: {
         'цифровой',
         'система',
         'Technologie',
-        'digital',
-        'System',
-        'technologie',
         'numérique',
         'tecnologia',
         'tecnología',
@@ -443,6 +443,7 @@ export const DISTILLED_ANCHORS_PAYLOAD: {
         'contextus',
         'circumstantia',
         'ambitus',
+        'secretum',
       ],
       nuances: [
         'indexicality',
@@ -485,6 +486,7 @@ export const DISTILLED_ANCHORS_PAYLOAD: {
         'voluntas',
         'propositum',
         'finalitas',
+        'intentio',
       ],
       nuances: [
         'premeditation',
@@ -513,7 +515,6 @@ export const DISTILLED_ANCHORS_PAYLOAD: {
         'видение',
         'Bild',
         'Metapher',
-        'image',
         'métaphore',
         'visione',
         'metafora',
@@ -558,9 +559,9 @@ export const DISTILLED_ANCHORS_PAYLOAD: {
         'morale',
         'etica',
         'ética',
-        'moral',
         'էթիկա',
         'ethika',
+        'conscientia',
         'lex',
         'iustitia',
         'virtus',

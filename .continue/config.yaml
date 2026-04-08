@@ -1,0 +1,16 @@
+name: ALTRO 1
+version: 1.0.0
+schema: v1
+
+models:
+  - name: Qwen 2.5 14B
+    provider: ollama
+    model: qwen2.5:14b
+    apiBase: http://127.0.0.1:11434
+    roles:
+      - chat
+      - edit
+      - apply
+    defaultCompletionOptions:
+      temperature: 0.5
+      maxTokens: 8192

@@ -5,7 +5,11 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { flushSync } from 'react-dom';
 import { Group, Panel, Separator } from 'react-resizable-panels';
 import { RefreshCcw } from 'lucide-react';
-import { buildStencilForDisplay } from '@core/StencilDisplayHelper';
+import {
+  buildStencilForDisplay,
+  buildStencilForDisplayWithSemantic,
+  type StencilDisplayResult,
+} from '@core/StencilDisplayHelper';
 import { DataVault } from '@core/DataVault';
 import { ToolsModal } from '@/components/ToolsModal';
 import { FileGateway, IPA_SOURCE_DOC_KEY } from '@/components/FileGateway';
@@ -16,6 +20,8 @@ import { ArchiveModal } from '@/components/altro/ArchiveModal';
 import { ExportModal } from '@/components/altro/ExportModal';
 import { InputTerminal, StencilMonitor } from '@/components/glass';
 import { INITIAL_DOMAIN_WEIGHTS } from '@/lib/altroData';
+import { CrystalLoader } from '@/lib/altro/CrystalLoader';
+import { SemanticFirewall } from '@/security/SemanticFirewall';
 
 const GLASS_THEME = {
   dark: { bg: '#1A1A1B', text: '#e5e7eb', border: '#333', muted: '#6b7280', mutedText: '#9ca3af' },
@@ -29,6 +35,8 @@ export default function Test() {
   const [hoveredIPAId, setHoveredIPAId] = useState<number | null>(null);
   /** DataGuardSwitch: false = DIFUZZY (normal), true = STENCIL LOCK (ALTRO 1) */
   const [stencilLock, setStencilLock] = useState(false);
+  const [isCliVisible, setIsCliVisible] = useState(false);
+  const [diagnosticLogText, setDiagnosticLogText] = useState('');
   const [outputJustReceived, setOutputJustReceived] = useState(false);
   const wasScanningRef = useRef(false);
   const sourceDocVaultRef = useRef(new DataVault());
@@ -76,12 +84,26 @@ export default function Test() {
     executive: ipaCore.executiveWeights,
   });
 
-  /** Без useMemo: трафарет всегда от текущего `sourceText` из Nexus (избегаем «залипания» на первом снимке). */
-  const stencilDisplay = buildStencilForDisplay(sourceText ?? '');
+  const [stencilDisplay, setStencilDisplay] = useState<StencilDisplayResult>({
+    maskedText: '',
+    ipaToEntity: [],
+  });
+
+  const syncDiagnosticLogFromFirewall = useCallback(() => {
+    const entries = SemanticFirewall.getInstance().getDiagnosticLog();
+    const lines = entries.map((e) => {
+      const at = new Date(e.ts).toLocaleTimeString();
+      return `${at} [${e.mode.toUpperCase()}] ${e.token} :: ${e.event} :: ${e.detail}`;
+    });
+    setDiagnosticLogText(lines.join('\n'));
+  }, []);
 
   const handleFullReset = useCallback(() => {
     abortStreaming();
     setStencilLock(false);
+    setIsCliVisible(false);
+    SemanticFirewall.getInstance().clearDiagnosticLog();
+    setDiagnosticLogText('');
     resetStencilCore();
     clearAll();
     sourceDocVaultRef.current.removeNamed(IPA_SOURCE_DOC_KEY);
@@ -146,6 +168,57 @@ export default function Test() {
       }
     })();
   };
+
+  /** Монитор + CLI log: один проход — plain-сегменты → SemanticFirewall.mask (как в логе). */
+  useEffect(() => {
+    const raw = sourceText ?? '';
+    const useDifuzzy = !stencilLock;
+    const fw = SemanticFirewall.getInstance();
+    let cancelled = false;
+
+    void (async () => {
+      if (!raw.trim()) {
+        fw.clearDiagnosticLog();
+        if (!cancelled) {
+          setStencilDisplay({ maskedText: '', ipaToEntity: [] });
+          setDiagnosticLogText('');
+        }
+        return;
+      }
+      const cl = CrystalLoader.getInstance();
+      if (!cl.isReady()) {
+        try {
+          await cl.load('/data/altro_crystal.bin');
+        } catch {
+          if (!cancelled) {
+            setStencilDisplay(buildStencilForDisplay(raw));
+            setDiagnosticLogText('');
+          }
+          return;
+        }
+      }
+      if (cancelled) return;
+      fw.clearDiagnosticLog();
+      const display = buildStencilForDisplayWithSemantic(raw, (plain) =>
+        fw.mask(plain, { useDifuzzy })
+      );
+      if (!cancelled) {
+        setStencilDisplay(display);
+        syncDiagnosticLogFromFirewall();
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceText, stencilLock, syncDiagnosticLogFromFirewall]);
+
+  useEffect(() => {
+    if (!isCliVisible) return;
+    syncDiagnosticLogFromFirewall();
+    const timer = window.setInterval(syncDiagnosticLogFromFirewall, 300);
+    return () => window.clearInterval(timer);
+  }, [isCliVisible, syncDiagnosticLogFromFirewall]);
 
   useEffect(() => {
     const wasScanning = wasScanningRef.current;
@@ -275,6 +348,20 @@ export default function Test() {
           >
             <RefreshCcw className="w-3.5 h-3.5" strokeWidth={2} />
             RESET
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsCliVisible((v) => !v)}
+            className="text-[10px] px-2 py-1 rounded border font-mono uppercase"
+            style={{
+              borderColor: isCliVisible ? '#22d3ee' : headerBorder,
+              color: isCliVisible ? '#22d3ee' : theme.mutedText,
+              background: isCliVisible ? (isDark ? 'rgba(34,211,238,0.12)' : 'rgba(34,211,238,0.08)') : 'transparent',
+            }}
+            title="Показать/скрыть CLI-диагностику Stencil Firewall"
+          >
+            [CLI]
           </button>
 
           <button
@@ -414,6 +501,32 @@ export default function Test() {
                     executeAction: ipaCore.executeAction,
                   }}
                 />
+                {isCliVisible && (
+                  <div
+                    className="flex-shrink-0 border-t"
+                    style={{
+                      borderColor: panelBorder,
+                      background: isDark ? '#05070a' : '#0f172a',
+                    }}
+                  >
+                    <div
+                      className="px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider"
+                      style={{ color: '#22d3ee', borderBottom: `1px solid ${isDark ? '#11303a' : '#1e3a8a'}` }}
+                    >
+                      Stencil CLI Diagnostic Log
+                    </div>
+                    <textarea
+                      readOnly
+                      value={diagnosticLogText || '[NO DIAGNOSTIC EVENTS YET]'}
+                      className="w-full resize-none border-0 p-3 text-[11px] leading-relaxed font-mono focus:outline-none"
+                      style={{
+                        height: 150,
+                        background: 'transparent',
+                        color: '#86efac',
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             </Panel>
           </Group>

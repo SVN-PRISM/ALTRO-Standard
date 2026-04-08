@@ -126,6 +126,14 @@ export interface BypassLogEntry {
   reason?: string;
 }
 
+export interface DiagnosticLogEntry {
+  ts: number;
+  token: string;
+  mode: 'strict' | 'difuzzy';
+  event: 'mask' | 'oov_suspicious' | 'oov_clean' | 'pass';
+  detail: string;
+}
+
 /** Калибровка (internal 0–100, external -1..1) → 13-вектор */
 export function calibrationToVector(calibration: {
   internal?: { semantics?: number; context?: number; intent?: number; imagery?: number; ethics?: number };
@@ -208,6 +216,55 @@ function normalizeVector(v: number[]): number[] {
   return v.map((x) => x / len);
 }
 
+const DIFUZZY_THRESHOLD_FACTOR = 0.85;
+/** Временно снижено (v1.5 tweak): OOV typo → mask при sim > порога (напр. turbopressureoo ~0.545). */
+const DIFUZZY_SIMILARITY_MIN = 0.5;
+const DIFUZZY_INTENT_ANCHORS = [
+  'intent',
+  'intention',
+  'intentio',
+  'purpose',
+  'goal',
+  'намерение',
+  'цель',
+] as const;
+const DIFUZZY_CONTEXT_ANCHORS = [
+  'context',
+  'contextus',
+  'background',
+  'setting',
+  'secretum',
+  'контекст',
+  'ситуация',
+] as const;
+
+function normalizedEditSimilarity(a: string, b: string): number {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  const n = a.length;
+  const m = b.length;
+  const prev = new Array<number>(m + 1);
+  const curr = new Array<number>(m + 1);
+  for (let j = 0; j <= m; j++) prev[j] = j;
+  for (let i = 1; i <= n; i++) {
+    curr[0] = i;
+    const ca = a.charCodeAt(i - 1);
+    for (let j = 1; j <= m; j++) {
+      const cb = b.charCodeAt(j - 1);
+      const cost = ca === cb ? 0 : 1;
+      const del = prev[j]! + 1;
+      const ins = curr[j - 1]! + 1;
+      const sub = prev[j - 1]! + cost;
+      curr[j] = Math.min(del, ins, sub);
+    }
+    for (let j = 0; j <= m; j++) prev[j] = curr[j]!;
+  }
+  const dist = prev[m]!;
+  // Dice-подобная нормализация: устойчивее к 1-2 лишним символам в конце слова.
+  const denom = n + m;
+  return denom <= 0 ? 0 : 1 - dist / denom;
+}
+
 export class SemanticFirewall {
   private static instance: SemanticFirewall | null = null;
 
@@ -230,6 +287,15 @@ export class SemanticFirewall {
 
   /** Буфер S_k для processAtom (без аллокаций на hot-path) */
   private readonly stencilScores = new Float32Array(13);
+
+  /**
+   * CLI / тесты: единый порог для всех критических осей Stencil (null = дефолты {@link STENCIL_DOMAIN_THRESHOLDS}).
+   */
+  private stencilCriticalThresholdOverride: number | null = null;
+  /** ALTRO 1.5: DIFUZZY — смягчение порога + OOV typo-защита по intent/context якорям. */
+  private isFuzzy = false;
+  /** ALTRO 1.5 UI/CLI: потоковая диагностика последних решений Stencil. */
+  private readonly diagnosticLog: DiagnosticLogEntry[] = [];
 
   static getInstance(): SemanticFirewall {
     if (SemanticFirewall.instance == null) {
@@ -256,13 +322,78 @@ export class SemanticFirewall {
     this.lastReportLine = '';
   }
 
+  /** ALTRO 1.4 CLI: переопределить порог критических осей; null — сброс к встроенным значениям. */
+  setStencilCriticalThresholdOverride(value: number | null): void {
+    this.stencilCriticalThresholdOverride = value;
+  }
+
+  /** ALTRO 1.5: включить/выключить DIFUZZY-режим. */
+  setFuzzyMode(isFuzzy: boolean): void {
+    this.isFuzzy = !!isFuzzy;
+  }
+
+  private pushDiagnostic(entry: Omit<DiagnosticLogEntry, 'ts'>): void {
+    this.diagnosticLog.push({ ts: Date.now(), ...entry });
+    if (this.diagnosticLog.length > 300) this.diagnosticLog.splice(0, this.diagnosticLog.length - 300);
+  }
+
+  /** ALTRO 1.5: чтение лога решений Stencil для UI/CLI. */
+  getDiagnosticLog(): readonly DiagnosticLogEntry[] {
+    return this.diagnosticLog;
+  }
+
+  /** ALTRO 1.5: очистка диагностического лога. */
+  clearDiagnosticLog(): void {
+    this.diagnosticLog.length = 0;
+  }
+
+  /**
+   * 13 скоров S_k = V·C_k для токена (OOV → null). Для режима mirror в CLI.
+   */
+  getStencilDomainScores(word: string): number[] | null {
+    const normalized = word.normalize('NFC').toLowerCase().trim();
+    if (!normalized) return null;
+    const crystal = CrystalLoader.getInstance();
+    if (!crystal.isReady()) return null;
+    const v = crystal.getVector(normalized);
+    if (!v) return null;
+    crystal.dotCentroidsInPlace(v, this.stencilScores);
+    return Array.from(this.stencilScores);
+  }
+
+  private detectSuspiciousOovMask(normalizedWord: string): { mask: string | null; detail: string } {
+    const anchors: ReadonlyArray<{ domain: 'intent' | 'context'; terms: readonly string[] }> = [
+      { domain: 'intent', terms: DIFUZZY_INTENT_ANCHORS },
+      { domain: 'context', terms: DIFUZZY_CONTEXT_ANCHORS },
+    ];
+    let bestDomain: 'intent' | 'context' | null = null;
+    let bestScore = 0;
+    for (const group of anchors) {
+      for (const rawAnchor of group.terms) {
+        const anchor = rawAnchor.normalize('NFC').toLowerCase().trim();
+        const sim = normalizedEditSimilarity(normalizedWord, anchor);
+        if (sim > bestScore) {
+          bestScore = sim;
+          bestDomain = group.domain;
+        }
+      }
+    }
+    if (bestDomain && bestScore > DIFUZZY_SIMILARITY_MIN) {
+      return {
+        mask: `[ID:MASK_${bestDomain}]`,
+        detail: `sim=${bestScore.toFixed(3)} via ${bestDomain} anchors`,
+      };
+    }
+    return { mask: null, detail: `sim=${bestScore.toFixed(3)} below ${DIFUZZY_SIMILARITY_MIN}` };
+  }
+
   /**
    * Stencil Logic (ALTRO_CRYSTAL_v1): эмбеддинг из кристалла → S_k = V·C_k → пороги по доменам.
    * Классификация без LLM (нужен заранее загруженный {@link CrystalLoader}).
    *
    * @returns `[ID:MASK_<domain>]` при превышении порога на критической оси, иначе `null` (OOV / кристалл не готов / нет триггера).
    */
-  processAtom(word: string): string | null {
+  processAtom(word: string, isFuzzy = this.isFuzzy): string | null {
     const normalized = word.normalize('NFC').toLowerCase().trim();
     if (!normalized) {
       return null;
@@ -275,6 +406,31 @@ export class SemanticFirewall {
 
     const v = crystal.getVector(normalized);
     if (!v) {
+      if (isFuzzy) {
+        const suspect = this.detectSuspiciousOovMask(normalized);
+        if (suspect.mask) {
+          this.pushDiagnostic({
+            token: normalized,
+            mode: 'difuzzy',
+            event: 'oov_suspicious',
+            detail: `${suspect.detail} => ${suspect.mask}`,
+          });
+          return suspect.mask;
+        }
+        this.pushDiagnostic({
+          token: normalized,
+          mode: 'difuzzy',
+          event: 'oov_clean',
+          detail: suspect.detail,
+        });
+        return null;
+      }
+      this.pushDiagnostic({
+        token: normalized,
+        mode: 'strict',
+        event: 'oov_clean',
+        detail: 'oov (strict mode)',
+      });
       return null;
     }
 
@@ -282,12 +438,26 @@ export class SemanticFirewall {
 
     for (let i = 0; i < STENCIL_CRITICAL_PAIRS.length; i++) {
       const { idx, key } = STENCIL_CRITICAL_PAIRS[i]!;
-      const threshold = STENCIL_DOMAIN_THRESHOLDS[key];
+      let threshold = this.stencilCriticalThresholdOverride ?? STENCIL_DOMAIN_THRESHOLDS[key];
+      if (isFuzzy) threshold *= DIFUZZY_THRESHOLD_FACTOR;
       if (this.stencilScores[idx]! >= threshold) {
-        return `[ID:MASK_${key}]`;
+        const mask = `[ID:MASK_${key}]`;
+        this.pushDiagnostic({
+          token: normalized,
+          mode: isFuzzy ? 'difuzzy' : 'strict',
+          event: 'mask',
+          detail: `${key}: score=${this.stencilScores[idx]!.toFixed(3)} threshold=${threshold.toFixed(3)}`,
+        });
+        return mask;
       }
     }
 
+    this.pushDiagnostic({
+      token: normalized,
+      mode: isFuzzy ? 'difuzzy' : 'strict',
+      event: 'pass',
+      detail: 'no critical threshold crossed',
+    });
     return null;
   }
 
@@ -295,7 +465,7 @@ export class SemanticFirewall {
    * Потоковая трассировка трафарета: слова → {@link processAtom}; маска вместо слова при триггере;
    * пробелы и пунктуация без изменений.
    */
-  maskSentence(text: string): string {
+  maskSentence(text: string, isFuzzy = this.isFuzzy): string {
     if (!text) {
       return text;
     }
@@ -308,13 +478,22 @@ export class SemanticFirewall {
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i]!;
       if (/^\p{L}+(?:[-']\p{L}+)*$/u.test(part)) {
-        const mask = this.processAtom(part);
+        const mask = this.processAtom(part, isFuzzy);
         out += mask ?? part;
       } else {
         out += part;
       }
     }
     return out;
+  }
+
+  /**
+   * ALTRO 1.5 UI/CLI: маскирование с явным DIFUZZY.
+   * Не меняет persistent {@link setFuzzyMode}; передаёт флаг только в этот прогон.
+   */
+  mask(text: string, options?: { useDifuzzy?: boolean }): string {
+    const fuzzy = options?.useDifuzzy ?? this.isFuzzy;
+    return this.maskSentence(text, fuzzy);
   }
 
   /**

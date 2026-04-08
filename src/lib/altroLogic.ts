@@ -28,7 +28,7 @@ import {
   resolveHomonymByStress,
   type TextToken,
   type SemanticSuggestion,
-} from '@/lib/altroEngine';
+} from '@/lib/altro/engine';
 import { buildAccentedWordWithCharCode } from '@/lib/altro/textUtils';
 import {
   HOMONYM_DB,
@@ -43,7 +43,7 @@ import { fuzzySpellSuggest } from '@/lib/altro/spellUtils';
 
 const SOURCE_HOMONYM_LIST = ['дела', 'органы', 'поводу', 'пропасть', 'предусмотреть', 'замок', 'белки', 'атлас', 'дорога', 'стоит'];
 
-export type PresetId = 'mirror' | 'bridge' | 'transfigure' | 'slang' | null;
+export type PresetId = 'mirror' | 'transfigure' | 'slang' | null;
 
 /** Проверка наличия ударения в слове */
 export function wordHasStress(word: string): boolean {
@@ -111,7 +111,6 @@ export interface RunCoreSanitationResult {
   resolvedHomonyms: Map<string, string>;
   textTokens: TextToken[];
   isCleaningComplete: boolean;
-  semanticOkFlash: boolean;
   altroGoldenState: string;
 }
 
@@ -256,7 +255,6 @@ export function runCoreSanitation(input: RunCoreSanitationInput): RunCoreSanitat
     resolvedHomonyms: autoResolved,
     textTokens: tokens,
     isCleaningComplete: isCleaningOK,
-    semanticOkFlash: isCleaningOK,
     altroGoldenState,
   };
 }
@@ -280,7 +278,7 @@ export interface RunScanInput {
   domainWeights: DomainWeights;
   altroCalibration: {
     internal: { semantics: number; context: number; intent: number; imagery: number; ethics: number };
-    external: { economics: number; politics: number; society: number; history: number; culture: number; aesthetics: number; technology: number; religion: number };
+    external: { economics: number; politics: number; society: number; history: number; culture: number; aesthetics: number; technology: number; spirituality: number };
   };
   isCommitted: boolean;
   committedTokens: TextToken[];
@@ -345,7 +343,7 @@ export function runScanLogic(input: RunScanInput): RunScanResult {
     altroCalibration.external.culture === 0 &&
     altroCalibration.external.aesthetics === 0 &&
     altroCalibration.external.technology === 0 &&
-    altroCalibration.external.religion === 0;
+    altroCalibration.external.spirituality === 0;
   const isMirrorMode = allInternalSlidersZero && allExternalSlidersZero;
 
   if (isMirrorMode || activePreset === 'mirror') {
@@ -402,7 +400,7 @@ export function runScanLogic(input: RunScanInput): RunScanResult {
 }
 
 export interface ApplyPresetInput {
-  preset: 'mirror' | 'bridge' | 'transfigure' | 'slang';
+  preset: 'mirror' | 'transfigure' | 'slang';
   textToUse: string;
   domainWeights: DomainWeights;
   mappedScenario: ScenarioType;
@@ -471,7 +469,9 @@ export function applyHomonymVariantSelect(input: ApplyHomonymVariantSelectInput)
   homonymRegistryUpdate.set(tokenId, { resolved: true, variant: accentedWord });
 
   const textTokensUpdate = textTokens.map((t) =>
-    t.id === tokenId ? { ...t, resolvedAccent: accentedWord, resolvedText: accentedWord, isAccepted: true } : t
+    t.id === tokenId
+      ? { ...t, resolvedAccent: accentedWord, resolvedText: accentedWord, isAccepted: true, isLocked: true, meaning: variantWord }
+      : t
   );
 
   const base = displayedAdaptation || '';

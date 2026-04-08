@@ -1,6 +1,6 @@
 /**
  * The Forge — сборка `public/data/altro_crystal.bin` по спецификации ALTRO_CRYSTAL_v1.md.
- * Forge **1.3**: дистиллированные якоря (`distilledAnchors.json` / `distilledAnchorsPayload.ts`) —
+ * Forge **1.4**: дистиллированные якоря (`distilledAnchors.json` / `distilledAnchorsPayload.ts`) —
  * центроид = взвешенное среднее (core 1.0, nuances 0.7, isoMarkers 1.0), затем L2; spec_version=3.
  * @xenova/transformers только на этапе сборки (devDependency), не в рантайме SDK.
  *
@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from '@xenova/transformers';
 import { xxhash64Bytes, utf8Encoder } from '../core/crystal/xxhash64';
-import { CRITICAL_INJECTION_V13, DISTILLED_ANCHORS_PAYLOAD } from './distilledAnchorsPayload';
+import { CRITICAL_INJECTION_V14, DISTILLED_ANCHORS_PAYLOAD } from './distilledAnchorsPayload';
 import {
   ALTRO_LIBRARY,
   HOMONYM_DB,
@@ -29,7 +29,7 @@ const ROOT = join(__dirname, '..');
 const OUT_PATH = join(ROOT, 'public', 'data', 'altro_crystal.bin');
 
 const MAGIC = 0x414c5452;
-/** Forge 1.3: IP-дистилляция якорей + взвешенные центроиды (layout v1 совместим). */
+/** Forge 1.4: IP-дистилляция якорей + взвешенные центроиды (layout v1 совместим). */
 const SPEC_VERSION = 3;
 const FLAG_VECTORS_L2 = 1;
 const SLOT_STRIDE = 16;
@@ -274,6 +274,32 @@ function embedSyntheticDeterministic(tokens: string[], dim: number): Float32Arra
   return out;
 }
 
+/**
+ * Forge 1.4: при SHA256-эмбеддингах латинские леммы не коррелируют с центроидами.
+ * Копируем строку вектора с канонической EN-леммы (тот же L2), затем центроид intent/… снова согласуется.
+ */
+const LATIN_LEMMA_VECTOR_SOURCES: Record<string, string> = {
+  intentio: 'intent',
+  conscientia: 'moral',
+  secretum: 'context',
+};
+
+function alignLatinLemmaVectors(tokens: string[], vectors: Float32Array, dim: number): void {
+  const tokenToRow = new Map<string, number>();
+  tokens.forEach((t, i) => tokenToRow.set(t, i));
+  for (const [alias, source] of Object.entries(LATIN_LEMMA_VECTOR_SOURCES)) {
+    const ri = tokenToRow.get(alias);
+    const rs = tokenToRow.get(source);
+    if (ri === undefined || rs === undefined) continue;
+    const srcBase = rs * dim;
+    const dstBase = ri * dim;
+    for (let d = 0; d < dim; d++) {
+      vectors[dstBase + d] = vectors[srcBase + d]!;
+    }
+  }
+  console.log('[Forge] Latin lemma vectors aligned to canonical lemmas (synthetic embed only).');
+}
+
 async function embedAllTokensTransformers(
   tokens: string[],
   dim: number,
@@ -314,21 +340,24 @@ async function embedAllTokens(
   tokens: string[],
   dim: number,
   batchSize: number
-): Promise<Float32Array> {
+): Promise<{ vectors: Float32Array; synthetic: boolean }> {
   if (process.env.CRYSTAL_SYNTHETIC === '1') {
     console.warn(
       '[Forge] CRYSTAL_SYNTHETIC=1 — SHA256-based vectors (not semantic); use transformers when HF доступен.'
     );
-    return embedSyntheticDeterministic(tokens, dim);
+    return { vectors: embedSyntheticDeterministic(tokens, dim), synthetic: true };
   }
   try {
-    return await embedAllTokensTransformers(tokens, dim, batchSize);
+    return {
+      vectors: await embedAllTokensTransformers(tokens, dim, batchSize),
+      synthetic: false,
+    };
   } catch (err) {
     console.warn(
       '[Forge] Transformers / Hugging Face недоступны; fallback на детерминированные векторы:',
       err instanceof Error ? err.message : err
     );
-    return embedSyntheticDeterministic(tokens, dim);
+    return { vectors: embedSyntheticDeterministic(tokens, dim), synthetic: true };
   }
 }
 
@@ -391,8 +420,8 @@ async function main(): Promise<void> {
   const targetN = Math.max(1, Number(process.env.CRYSTAL_TARGET_N || 11000) | 0);
   const batchSize = Math.max(1, Number(process.env.CRYSTAL_BATCH || 8) | 0);
 
-  console.log('[Forge 1.3] Collecting tokens (critical + distilled anchors + altroData + frequency)…');
-  const critical = CRITICAL_INJECTION_V13.map((w) => normalizeCrystalToken(w)).filter(Boolean);
+  console.log('[Forge 1.4] Collecting tokens (critical + distilled anchors + altroData + frequency)…');
+  const critical = CRITICAL_INJECTION_V14.map((w) => normalizeCrystalToken(w)).filter(Boolean);
   const anchorFlat = flattenDistilledTermsNormalized().filter((w) => w.length > 0);
   const altroBatch = collectAltroSeedTokens();
 
@@ -436,7 +465,10 @@ async function main(): Promise<void> {
 
   const dim = 384;
   console.log('[Forge] Embedding (MiniLM multilingual, dim=384)…');
-  const vectors = await embedAllTokens(tokens, dim, batchSize);
+  const { vectors, synthetic } = await embedAllTokens(tokens, dim, batchSize);
+  if (synthetic) {
+    alignLatinLemmaVectors(tokens, vectors, dim);
+  }
 
   console.log('[Forge] Building domain centroids…');
   const centroids = buildCentroids(tokens, vectors, dim);

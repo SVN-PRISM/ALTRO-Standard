@@ -32,7 +32,7 @@ export function ToolsModal({ isOpen, onClose, title, children, isDark }: ToolsMo
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center p-4"
       onClick={(e) => e.target === e.currentTarget && onClose()}
-      style={{ background: 'rgba(0,0,0,0.4)' }}
+      style={{ background: 'rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)' }}
     >
       <div
         className="w-full max-w-md rounded-lg shadow-xl overflow-hidden"

@@ -13,8 +13,8 @@ export interface SovereignControllerSnapshot {
 
 /**
  * SovereignController — контроллер Трафарета (Translation-First).
- * 1. prepareStencil(text, targetLanguage, weights?) — порядок: SemanticFirewall.maskSentence (Кристалл, [ID:MASK_*]) → Masker (RegExp, {{IPA_N}}); vault — только RegExp-сущности.
- * 2. finalize — подставляет display по {{IPA_N}}; литералы [ID:MASK_*] проходят без изменений (не в vault).
+ * 1. prepareStencil(text, targetLanguage, weights?) — порядок: SemanticFirewall.maskSentence (Кристалл, [ID:MASK_*]) → Masker (RegExp + hoist [ID:MASK_*] → {{IPA_N}}); vault — RegExp-сущности и semantic_mask_*.
+ * 2. finalize — подставляет display по {{IPA_N}} (в т.ч. семантические кирпичи из Masker.hoistSemanticMaskPlaceholders).
  */
 export class SovereignController {
   private vault: DataVault;

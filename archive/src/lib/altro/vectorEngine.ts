@@ -12,7 +12,7 @@ import type { DomainWeights } from '@/lib/altroData';
 /** Минимальный тип калибровки для векторного движка (избегаем циклического импорта) */
 export interface CalibrationForVectors {
   internal?: { semantics?: number; context?: number; intent?: number; imagery?: number; ethics?: number };
-  external?: { economics?: number; politics?: number; society?: number; history?: number; culture?: number; aesthetics?: number; technology?: number; religion?: number };
+  external?: { economics?: number; politics?: number; society?: number; history?: number; culture?: number; aesthetics?: number; technology?: number; spirituality?: number };
 }
 
 /** Порог активации домена (0–100 для internal, 0–1 для external) */
@@ -59,7 +59,7 @@ export function hasActiveDomainWeights(calibration: CalibrationForVectors): bool
  */
 export function getSemanticDisplacementDirective(calibration: CalibrationForVectors): string {
   const { internal = {}, external = {} } = calibration;
-  const spiritVal = ((external.religion ?? 0) + 1) / 2 * 100;
+  const spiritVal = ((external.spirituality ?? 0) + 1) / 2 * 100;
   const imageryVal = internal.imagery ?? 0;
   const contextVal = internal.context ?? 0;
 
@@ -98,7 +98,7 @@ const externalToInternal: Record<string, ('semantics' | 'context' | 'intent' | '
   history: ['semantics', 'context'],
   aesthetics: ['imagery', 'ethics'],
   culture: ['imagery', 'context'],
-  religion: ['ethics', 'intent'],
+  spirituality: ['ethics', 'intent'],
   society: ['context', 'semantics'],
   politics: ['intent', 'semantics'],
   economics: ['semantics'],
@@ -200,11 +200,11 @@ export function areWeightsInStandby(weights: DomainWeights): boolean {
   const normalizedCulture = (weights.culture + 1) / 2;
   const normalizedAesthetics = (weights.aesthetics + 1) / 2;
   const normalizedTechnology = (weights.technology + 1) / 2;
-  const normalizedReligion = (weights.religion + 1) / 2;
+  const normalizedSpirituality = (weights.spirituality + 1) / 2;
 
   const externalWeights = [
     normalizedHistory, normalizedPolitics, normalizedSociety, normalizedEconomics,
-    normalizedCulture, normalizedAesthetics, normalizedTechnology, normalizedReligion,
+    normalizedCulture, normalizedAesthetics, normalizedTechnology, normalizedSpirituality,
   ];
   const internalWeights = [
     weights.semantics, weights.context, weights.intent, weights.imagery, weights.ethics,
@@ -235,7 +235,7 @@ export function applyScenarioCoefficients(weights: DomainWeights, scenario: Scen
   result.culture = (scenarioWeights.culture * 2 - 1) * 0.5 + weights.culture * 0.5;
   result.aesthetics = (scenarioWeights.aesthetics * 2 - 1) * 0.5 + weights.aesthetics * 0.5;
   result.technology = (scenarioWeights.technology * 2 - 1) * 0.5 + weights.technology * 0.5;
-  result.religion = (scenarioWeights.religion * 2 - 1) * 0.5 + weights.religion * 0.5;
+  result.spirituality = (scenarioWeights.spirituality * 2 - 1) * 0.5 + weights.spirituality * 0.5;
 
   return result;
 }
@@ -255,12 +255,12 @@ export function calculateScenarioWeights(
   result.culture = (profile.culture * 2 - 1) * (1 - mixRatio) + userSliders.culture * mixRatio;
   result.aesthetics = (profile.aesthetics * 2 - 1) * (1 - mixRatio) + userSliders.aesthetics * mixRatio;
   result.technology = (profile.technology * 2 - 1) * (1 - mixRatio) + userSliders.technology * mixRatio;
-  result.religion = (profile.religion * 2 - 1) * (1 - mixRatio) + userSliders.religion * mixRatio;
+  result.spirituality = (profile.spirituality * 2 - 1) * (1 - mixRatio) + userSliders.spirituality * mixRatio;
 
   return result;
 }
 
-const EXTERNAL_KEYS = ['economics', 'politics', 'society', 'history', 'culture', 'aesthetics', 'technology', 'religion'] as const;
+const EXTERNAL_KEYS = ['economics', 'politics', 'society', 'history', 'culture', 'aesthetics', 'technology', 'spirituality'] as const;
 
 /** OPR-модуляция: Effective_Influence_i = D_i * O */
 export function applyOprModulation(weights: DomainWeights, oprPrism: number): DomainWeights {

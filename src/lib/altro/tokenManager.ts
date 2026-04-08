@@ -18,6 +18,8 @@ export interface TextToken {
   isLocked: boolean;
   /** Опциональные поля для совместимости с UI и altroLogic */
   resolvedAccent?: string;
+  /** Выбранный смысл омонима (для Qwen при транскреации) */
+  meaning?: string;
   options?: string[];
   isMisspelled?: boolean;
   semanticReplacement?: string;
@@ -103,9 +105,30 @@ export class AltroTokenManager {
   static wrapTextForQwen(text: string): string {
     if (!text) return text;
     const tokens = this.tokenize(text);
+    return this.wrapTokensForQwen(tokens);
+  }
+
+  /**
+   * Оборачивает массив токенов: все с isLocked === true — в <fixed>слово</fixed>.
+   * Используется при передаче токенов из UI (с учётом ручных переключений lock).
+   */
+  static wrapTokensForQwen(tokens: TextToken[]): string {
+    if (!tokens?.length) return '';
     return tokens
       .map((t) => (t.type === 'word' && t.isLocked ? `<fixed>${t.word}</fixed>` : t.word))
       .join('');
+  }
+
+  /**
+   * Переключает isLocked для токена с указанным id.
+   * Только для type === 'word'. Возвращает новый массив (иммутабельно).
+   */
+  static toggleLock(tokens: TextToken[], tokenId: number): TextToken[] {
+    return tokens.map((t) =>
+      t.id === tokenId && t.type === 'word'
+        ? { ...t, isLocked: !t.isLocked }
+        : t
+    );
   }
 
   /** Удаляет теги [STRESS], [/STRESS], <fixed>, </fixed>. \u0301 не затрагивается. */

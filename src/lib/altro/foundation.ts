@@ -14,7 +14,7 @@ export interface AltroSample {
     culture?: number;
     aesthetics?: number;
     technology?: number;
-    religion?: number; // Religious/Sacred context
+    spirituality?: number; // Духовность / Sacred context
     // Внутренние (Ядро)
     semantics?: number;
     context?: number;
@@ -58,7 +58,7 @@ export const GOLDEN_DATASET: AltroSample[] = [
     sourceText: "To be, or not to be, that is the question...",
     domainWeights: {
       culture: 1.0,
-      religion: 0.8,
+      spirituality: 0.8,
       aesthetics: 0.9
     },
     adaptationGoal: "Classical adaptation, retaining archaic flavor."
@@ -77,5 +77,9 @@ export const GOLDEN_DATASET: AltroSample[] = [
 ];
 
 // Типы для 13 доменов (Строгая типизация для TypeScript)
-export type ExternalDomainKey = 'economics' | 'politics' | 'society' | 'history' | 'culture' | 'aesthetics' | 'technology' | 'religion';
+export type ExternalDomainKey = 'economics' | 'politics' | 'society' | 'history' | 'culture' | 'aesthetics' | 'technology' | 'spirituality';
 export type InternalDomainKey = 'semantics' | 'context' | 'intent' | 'imagery' | 'ethics';
+
+/** ALTRO Golden Standard v2.1 — системный манифест обработки. */
+export const ALTRO_GOLDEN_STANDARD_MANIFEST =
+  'ALTRO Golden Standard v2.1: Единственными методами обработки являются Mirror (структурная точность) и Transfigure (семантический резонанс). DATA SYNC является изолированным шлюзом для калибровки весов через SQL-интент. Использование внешних словарей для прямой замены слов (legacy bridge) запрещено.';
