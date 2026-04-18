@@ -137,6 +137,7 @@ const PATTERN_SPECS_FOR_LOG = [
 
 /** Лимит итераций в `while (regex.exec)` — защита от бесконечного цикла при пустых совпадениях / багах RegExp. */
 const MAX_REGEX_EXEC_ITER = 100;
+const DEBUG_MASKER = process.env.ALTRO_DEBUG_MASKER === '1';
 
 interface RawSpan {
   start: number;
@@ -254,22 +255,25 @@ export class Masker {
    * @param weights — контекст доменов (IntentOrchestrator) для microTranscreate / будущих правил маскирования.
    */
   mask(text: string, targetLanguage: string, weights?: DomainWeights): string {
-    console.log('[MASKER] ATTEMPT: mask() begin — source length', text.length);
-    console.log('ORIGINAL_TEXT_HEX:', textPrefixHex(text, 100), '| length=', text.length);
-
-    console.log(
-      'MATCH_ATTEMPT:',
-      'formula_display',
-      patternMatchesSomewhere(FORMULA_LATEX_DISPLAY, 'g', text)
-    );
-    console.log('MATCH_ATTEMPT:', 'formula_bracket', patternMatchesSomewhere(FORMULA_BRACKET, 'g', text));
-    console.log('MATCH_ATTEMPT:', 'formula_paren', patternMatchesSomewhere(FORMULA_PAREN, 'g', text));
-    console.log('MATCH_ATTEMPT:', 'formula_inline', patternMatchesSomewhere(FORMULA_LATEX_INLINE, 'g', text));
+    if (DEBUG_MASKER) {
+      console.log('[MASKER] ATTEMPT: mask() begin — source length', text.length);
+      console.log('ORIGINAL_TEXT_HEX:', textPrefixHex(text, 100), '| length=', text.length);
+      console.log(
+        'MATCH_ATTEMPT:',
+        'formula_display',
+        patternMatchesSomewhere(FORMULA_LATEX_DISPLAY, 'g', text)
+      );
+      console.log('MATCH_ATTEMPT:', 'formula_bracket', patternMatchesSomewhere(FORMULA_BRACKET, 'g', text));
+      console.log('MATCH_ATTEMPT:', 'formula_paren', patternMatchesSomewhere(FORMULA_PAREN, 'g', text));
+      console.log('MATCH_ATTEMPT:', 'formula_inline', patternMatchesSomewhere(FORMULA_LATEX_INLINE, 'g', text));
+    }
 
     const formulaRaw = this.collectFormulaMagnetSpans(text);
     const formulaMerged = this.mergeSpans(formulaRaw);
-    for (const s of formulaRaw) {
-      console.log(`MASKER ATTEMPT: [${s.patternName ?? s.type}] matched [${s.text}]`);
+    if (DEBUG_MASKER) {
+      for (const s of formulaRaw) {
+        console.log(`MASKER ATTEMPT: [${s.patternName ?? s.type}] matched length=${s.text.length}`);
+      }
     }
 
     const blankedForSecondary = blankRangesInText(
@@ -277,8 +281,10 @@ export class Masker {
       formulaMerged.map((s) => ({ start: s.start, end: s.end }))
     );
     const secondaryRaw = this.collectSecondarySpans(blankedForSecondary, text);
-    for (const s of secondaryRaw) {
-      console.log(`MASKER ATTEMPT: [${s.patternName ?? s.type}] matched [${s.text}]`);
+    if (DEBUG_MASKER) {
+      for (const s of secondaryRaw) {
+        console.log(`MASKER ATTEMPT: [${s.patternName ?? s.type}] matched length=${s.text.length}`);
+      }
     }
 
     const secondaryFiltered = secondaryRaw.filter(
@@ -293,23 +299,10 @@ export class Masker {
     const raw = [...formulaRaw, ...secondaryRaw, ...semanticRaw];
     const merged = this.mergeSpans([...formulaMerged, ...secondaryFiltered, ...semanticFiltered]);
 
-    console.log('[ALTRO][Masker] Спецификации RegExp (шаблоны Masker):', PATTERN_SPECS_FOR_LOG);
-    console.log(
-      '[ALTRO][Masker] Совпадения по всем паттернам (до merge):',
-      raw.map((s) => ({ type: s.type, start: s.start, end: s.end, captured: s.text }))
-    );
-    console.log(
-      '[ALTRO][Masker] Итоговые захваты после merge (что ушло в трафарет):',
-      merged.map((s) => ({ type: s.type, start: s.start, end: s.end, captured: s.text }))
-    );
-    console.log(
-      '[ALTRO][Masker] raw match (pre-clean, pre-trim):',
-      merged.map((s) => ({ type: s.type, raw: s.text }))
-    );
-
-    const diag850 = merged.find((s) => /\$850,000\b/.test(s.text.trim()) || s.text.includes('$850,000'));
-    if (diag850) {
-      console.log('[ALTRO][Masker] Captured Unit:', diag850.text.trim());
+    if (DEBUG_MASKER) {
+      console.log('[ALTRO][Masker] Спецификации RegExp (шаблоны Masker):', PATTERN_SPECS_FOR_LOG);
+      console.log('[ALTRO][Masker] Совпадения по всем паттернам (до merge):', raw.length);
+      console.log('[ALTRO][Masker] Итоговые захваты после merge (что ушло в трафарет):', merged.length);
     }
 
     const originals: Array<{ text: string; type: string }> = [];
@@ -334,9 +327,11 @@ export class Masker {
       if (detectedType === 'unit') {
         const uid = resolveUnitIdFromCapture(source);
         const dis = resolveUnitMagnetDisambiguation(source, uid);
-        console.log(
-          `[ALTRO][Stage:Unit-Magnet] Captured Unit: ${source} -> ID: ${uid ?? 'unknown'}${dis ? ` — ${dis}` : ''}`
-        );
+        if (DEBUG_MASKER) {
+          console.log(
+            `[ALTRO][Stage:Unit-Magnet] Captured Unit length=${source.length} -> ID: ${uid ?? 'unknown'}${dis ? ` — ${dis}` : ''}`
+          );
+        }
       }
       const display = detectedType.startsWith('semantic_mask_')
         ? source

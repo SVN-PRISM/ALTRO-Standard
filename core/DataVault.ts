@@ -30,11 +30,9 @@ export class DataVault {
     if (process.env.ALTRO_AUDIT_STENCIL === '1') {
       console.log('[ALTRO_AUDIT][DataVault] push', {
         id: key,
-        /** display — то, что вернёт get() / finalize */
-        storeDisplay: display,
-        /** source — оригинальный сегмент (англ. и т.д.) */
-        sourceMapSource: source,
         type,
+        displayLength: display.length,
+        sourceLength: source.length,
       });
     }
     return key;
@@ -85,6 +83,17 @@ export class DataVault {
       counter: this.counter,
     };
     return JSON.stringify(snapshot);
+  }
+
+  /**
+   * Public snapshot for streaming injectors: only masked-key -> display map.
+   * `sourceMap` intentionally excluded to keep source dictionary RAM-local.
+   */
+  toPublicJSON(): string {
+    return JSON.stringify({
+      store: Object.fromEntries(this.store),
+      counter: this.counter,
+    } satisfies Pick<DataVaultSnapshot, 'store' | 'counter'>);
   }
 
   static fromJSON(json: string): DataVault {

@@ -315,7 +315,7 @@ function orchestrateText(
       text: text.split('').map((char) => {
         if (char === ' ') return ' ';
         if (char.match(/[.!?,;:]/)) return char;
-        return Math.random() > 0.3 ? String.fromCharCode(0x200b) : char;
+        return char.charCodeAt(0) % 3 === 0 ? String.fromCharCode(0x200b) : char;
       }).join(''),
     };
   }

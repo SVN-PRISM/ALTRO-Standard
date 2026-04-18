@@ -11,9 +11,7 @@ export function ensureCrystalForStencil(): void {
   if (typeof window !== 'undefined') return;
   try {
     // Только Node; не тянем fs в клиентский бандл статическим импортом выше.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { readFileSync } = require('node:fs') as typeof import('node:fs');
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { join } = require('node:path') as typeof import('node:path');
     const p = join(process.cwd(), 'public', 'data', 'altro_crystal.bin');
     const raw = readFileSync(p) as Buffer;

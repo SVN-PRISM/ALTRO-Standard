@@ -103,6 +103,7 @@ export function useNexus({ sourceLanguage, isScanning, isScanningRef, onRunScan,
       (listening) => setIsListening(listening)
     );
     if (ok) setIsListening(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- getIsScanning reads ref; listing it would churn every render
   }, [isListening]);
 
   const handleFileUpload = useCallback(async (file: File) => {
@@ -123,12 +124,13 @@ export function useNexus({ sourceLanguage, isScanning, isScanningRef, onRunScan,
       console.error('[ALTRO File Intake Error]', err);
       setActiveFile(null);
     }
-  }, [onRunScan]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- getIsScanning reads ref
+  }, [onRunScan, setSourceText]);
 
   const clearSourceInput = useCallback(() => {
     setSourceText('');
     sourceTextRef.current = '';
-  }, []);
+  }, [setSourceText]);
 
   return {
     sourceText,

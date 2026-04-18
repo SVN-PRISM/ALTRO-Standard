@@ -467,6 +467,7 @@ export function useAltroScanner(params: UseAltroScannerParams) {
       setActivePreset,
       setDisplayTokens,
       setIsAnalyzed,
+      setLastGuardReport,
     ]
   );
 

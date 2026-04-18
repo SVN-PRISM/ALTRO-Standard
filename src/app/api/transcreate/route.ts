@@ -17,6 +17,7 @@ import {
 import { maskUserContentWithPrepareStencil } from '@core/transcreateUserContentMask';
 import { resolveTargetLanguageFromRequestBody } from '@core/stencilTargetLanguage';
 import { SovereignController } from '@core/SovereignController';
+import { buildDomainCalibrationStamp, generateSVNAuditLog } from '@core/svnAudit';
 import type { DomainWeights } from '@/lib/altroData';
 import { getOllamaModelFromContinueConfig } from '@/lib/continueConfig';
 import { applyAltroUniversalSystemPromptToMessages, ALTRO_UNIVERSAL_SYSTEM_PROMPT_VERSION } from '@/lib/altroUniversalSystemPrompt';
@@ -34,6 +35,7 @@ const OLLAMA_DISPATCHER = new Agent({ headersTimeout: 240_000, bodyTimeout: 240_
 export const dynamic = 'force-dynamic';
 
 const OLLAMA_BASE = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
+const SVN_NODE_ID = process.env.SVN_NODE_ID ?? 'ALTRO1_STENCIL_NODE';
 const OLLAMA_TIMEOUT_MS: number = Number(process.env.OLLAMA_TIMEOUT_MS) || 600_000;
 /** До первого ответа от Ollama (заголовки). 0 = отключить. 14b+ cold load в VRAM часто >60s — по умолчанию 3 мин. */
 const OLLAMA_EMERGENCY_CONNECT_MS: number = Number(process.env.OLLAMA_EMERGENCY_MS ?? 180000);
@@ -63,27 +65,22 @@ function maskMessages(
   messages: Array<{ role: string; content?: string }>,
   controller: SovereignController,
   targetLanguage: string
-): void {
+): string[] {
+  const maskedUserPayloads: string[] = [];
   for (const msg of messages) {
     /** Только user-текст: системный промпт не гоняем через Кристалл/Masker (ускорение, типично 75s→секунды). */
     if (msg.role !== 'user') continue;
     if (typeof msg.content === 'string' && msg.content.trim()) {
-      console.log(
-        '[PIPELINE CHECK][API] Raw length before mask:',
-        msg.content.length,
-        'role=',
-        msg.role
-      );
-      console.log(
-        `[ALTRO][Stage:pre-mask] role=${msg.role} — исходный текст IPA-пакета / сообщения до маскирования:\n`,
-        msg.content
-      );
       /** Блок `[USER_DIRECTIVE]…\n\n` не маскируется (см. partitionUserDirectiveForMasking). */
       msg.content = maskUserContentWithPrepareStencil(msg.content, (body) =>
         controller.prepareStencil(body, targetLanguage, undefined)
       );
+      if (msg.content.includes('{{IPA_')) {
+        maskedUserPayloads.push(msg.content);
+      }
     }
   }
+  return maskedUserPayloads;
 }
 
 /** Подставляет content обратно в структуру ответа. */
@@ -150,10 +147,7 @@ function createOllamaContentOnlyStream(source: ReadableStream<Uint8Array>): Read
             controller.enqueue(encoder.encode(out));
           }
         }
-        console.log(
-          '[ALTRO][Stage:pre-unmask] Сырой ответ Ollama (stream), до демаскирования на клиенте:\n',
-          accumulatedRawAssistant
-        );
+        console.log('[ALTRO][Stage:pre-unmask] Stream assembled length:', accumulatedRawAssistant.length);
       },
     })
   );
@@ -248,13 +242,20 @@ export async function POST(request: Request) {
           isRu: stencilTargetLang === 'ru',
         });
       }
-      maskMessages(messages, stencilController, stencilTargetLang);
+      const maskedUserPayloads = maskMessages(messages, stencilController, stencilTargetLang);
+      const calibrationStamp = buildDomainCalibrationStamp(intentWeights);
+      for (const maskedInput of maskedUserPayloads) {
+        console.log(
+          generateSVNAuditLog({
+            nodeId: SVN_NODE_ID,
+            maskedInput,
+            domainCalibrationStamp: calibrationStamp,
+          })
+        );
+      }
       for (const m of messages as Array<{ role: string; content?: string }>) {
         if (m.role !== 'user' || typeof m.content !== 'string') continue;
-        console.log(
-          '[SDK_EXIT_GATEWAY] user message (post-maskMessages, pre-Ollama body):\n',
-          m.content
-        );
+        console.log('[SDK_EXIT_GATEWAY] user message masked for LLM:', m.content.includes('{{IPA_'));
       }
       console.log(
         '[ALTRO][Stage:label-pre-localization] Завершено: все захваченные метки предварительно локализованы (Mirror, без весов доменов); далее — основная транскреация (Ollama).'
@@ -341,7 +342,7 @@ export async function POST(request: Request) {
     if (body.stream === true && response.body) {
       const filtered = createOllamaContentOnlyStream(response.body);
       /** Translation-First display map for client StreamInjector / executeInjector (must match server mask). */
-      const vaultB64 = Buffer.from(stencilController.getVault().toJSON(), 'utf8').toString('base64');
+      const vaultB64 = Buffer.from(stencilController.getVault().toPublicJSON(), 'utf8').toString('base64');
       return new Response(filtered, {
         headers: {
           'Content-Type': 'application/json',
@@ -355,10 +356,7 @@ export async function POST(request: Request) {
     const data = await response.json();
     stripThinkingFromChatPayload(data);
     const rawContent = extractOllamaAssistantText(data);
-    console.log(
-      '[ALTRO][Stage:pre-unmask] Сырой ответ Ollama до finalize (демаскирование / Unmasker на сервере):\n',
-      rawContent
-    );
+    console.log('[ALTRO][Stage:pre-unmask] Non-stream content length:', rawContent.length);
     const finalizedContent = stencilController.finalize(rawContent);
     const result = injectContent(data, finalizedContent);
     return Response.json(result);

@@ -221,6 +221,7 @@ export function useAltroPage() {
       setActivePreset(result.activePreset ?? 'mirror');
     if (result.activePattern !== undefined) setActivePattern(result.activePattern ?? null);
     return true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setters stable; snapshot needs domainWeights/scenario/opr
   }, [domainWeights, selectedScenario, oprPrismValue]);
 
   const mappedScenario: ScenarioType = selectedScenario === 'poetry' ? 'poetics' : selectedScenario === 'technocrat' ? 'technocrat' : selectedScenario === 'sacred' ? 'sacred' : selectedScenario === 'goldStandard' ? 'goldStandard' : 'without';
@@ -247,7 +248,7 @@ export function useAltroPage() {
       opr: oprPrismValue / 100,
       scenario: mappedScenario,
     }),
-    [domainWeights, selectedScenario, oprPrismValue]
+    [domainWeights, oprPrismValue, mappedScenario]
   );
 
   const inputText = isCommitted && committedTokens.length > 0 ? committedTokens.map((t) => t.word).join('') : sourceText;
@@ -321,6 +322,7 @@ export function useAltroPage() {
     setDisplayedAdaptation('');
     setTextTokens(tokenizeText(cleanText));
     setHomonymInstances(detectHomonymInstances(cleanText));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-stable field reset; setters stable
   }, []);
 
   const _runCoreSanitation = useCallback((inputText: string): string => {
@@ -340,6 +342,7 @@ export function useAltroPage() {
     if (result.altroGoldenState) setALTRO_GOLDEN_STATE(result.altroGoldenState);
     setScanResultBuffer(result.correctedTextResult);
     return result.correctedTextResult;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setScanResultBuffer stable
   }, [validatedTokens, resolvedHomonyms, domainWeights.context]);
 
   const handleEnterKey = useCallback((text: string, onCommandSuccess?: () => void) => {
@@ -385,6 +388,7 @@ export function useAltroPage() {
         setAdaptationText(result.adaptationText);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mirror branch uses stable setDomainWeights
   }, [sourceText, domainWeights, committedTokens, isCommitted, ALTRO_GOLDEN_STATE, mappedScenario, nexusCommand, oprPrismValue, isAnalyzed]);
 
   useEffect(() => {
@@ -516,6 +520,7 @@ export function useAltroPage() {
       console.log('[ALTRO FULL SEMANTIC RESET] Cleared: chat/source/adaptation, tokens, audit, suggestions, localStorage/sessionStorage, domainWeights→OPR, activePreset→transfigure, oprPrismValue→0, scenario→without, snapshots, securityBlocked, languages. Firewall OPR reset to neutral.');
     }
     window.setTimeout(() => setSemanticResetFlash(false), 1500);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- full reset: many stable setters omitted on purpose
   }, [setIsScanning]);
 
   useEffect(() => {
@@ -550,6 +555,7 @@ export function useAltroPage() {
     if (typeof window !== 'undefined') {
       console.log('[ALTRO LOCAL CLEAR] Source: field, tokens, audit, adaptation zeroed. Firewall context fragment annulled.');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- clear source: stable setters
   }, []);
 
   /** Очистка поля Nexus/Command — обнуление ввода и сигнал Firewall (OPR не сбрасывается). */
@@ -559,6 +565,7 @@ export function useAltroPage() {
     if (typeof window !== 'undefined') {
       console.log('[ALTRO LOCAL CLEAR] Nexus/Command: field zeroed. Firewall context fragment annulled.');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setNexusCommand stable
   }, []);
 
 
@@ -641,6 +648,7 @@ export function useAltroPage() {
     setOprPrismValue(Math.max(0, Math.min(100, snap.oprPrismValue)));
     setActivePreset(snap.activePreset);
     setSelectedScenario(snap.selectedScenario as typeof selectedScenario);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- setters from useResonance stable
   }, []);
 
   const deleteSnapshot = useCallback((id: string) => {
@@ -657,11 +665,13 @@ export function useAltroPage() {
   const handleInternalDomainChange = useCallback((key: InternalDomainKey, value: number) => {
     if (activePreset === 'mirror') return;
     setDomainWeights((prev) => ({ ...prev, [key]: value }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setDomainWeights stable
   }, [activePreset]);
 
   const handleExternalDomainChange = useCallback((key: ExternalDomainKey, value: number) => {
     if (activePreset === 'mirror') return;
     setDomainWeights((prev) => ({ ...prev, [key]: value }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- setDomainWeights stable
   }, [activePreset]);
 
   const handleSourceHomographClick = useCallback((tokenId: number) => {
@@ -718,7 +728,7 @@ export function useAltroPage() {
     setSemanticSuggestions((s) => s.filter((x) => !(x.phrase === phrase && x.suggestion === suggestion)));
     setShowSuspiciousSuggestion(false);
     setSelectedSuspiciousTokenId(null);
-  }, [displayedAdaptation]);
+  }, []);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
