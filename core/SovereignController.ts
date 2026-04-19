@@ -2,9 +2,11 @@
 
 import type { DomainWeights } from '@/lib/altroData';
 import { ensureCrystalForStencil } from '@/lib/altro/crystalBootstrap';
+import type { MaskSentenceResonanceOptions } from '@/security/SemanticFirewall';
 import { SemanticFirewall } from '@/security/SemanticFirewall';
 import { DataVault } from './DataVault';
 import { Masker, IPA_LABEL_REGEX } from './Masker';
+import { normalizeHomographs } from './normalizeHomographs';
 import { createStreamInjectorTransform } from './StreamInjector';
 
 export interface SovereignControllerSnapshot {
@@ -13,7 +15,7 @@ export interface SovereignControllerSnapshot {
 
 /**
  * SovereignController — контроллер Трафарета (Translation-First).
- * 1. prepareStencil(text, targetLanguage, weights?) — порядок: SemanticFirewall.maskSentence (Кристалл, [ID:MASK_*]) → Masker (RegExp + hoist [ID:MASK_*] → {{IPA_N}}); vault — RegExp-сущности и semantic_mask_*.
+ * 1. prepareStencil — порядок: SemanticFirewall.maskSentence (сырой текст, без пред-нормализации) → Masker → normalizeHomographs (только итог, чтобы не портить «к/в» до распознавания).
  * 2. finalize — подставляет display по {{IPA_N}} (в т.ч. семантические кирпичи из Masker.hoistSemanticMaskPlaceholders).
  */
 export class SovereignController {
@@ -31,11 +33,29 @@ export class SovereignController {
 
   /**
    * Трафарет: сначала семантическое сито (Кристалл), затем RegExp-Маскер (числа, даты, формулы → {{IPA_N}}).
+   * KSHERQ: при наличии весов — primeDirectiveCalibration(R) и correctionLoop по Ψ перед processAtom.
    */
-  prepareStencil(sourceText: string, targetLanguage: string, weights?: DomainWeights): string {
+  prepareStencil(
+    sourceText: string,
+    targetLanguage: string,
+    weights?: DomainWeights,
+    /** DIFUZZY=true / STENCIL LOCK=false — пороги SemanticFirewall; undefined = режим синглтона. */
+    semanticFuzzy?: boolean
+  ): string {
     ensureCrystalForStencil();
-    const afterSemantic = SemanticFirewall.getInstance().maskSentence(sourceText);
-    return this.masker.mask(afterSemantic, targetLanguage, weights);
+    const fw = SemanticFirewall.getInstance();
+    if (weights) {
+      fw.primeDirectiveCalibration(weights);
+    } else {
+      fw.applyNeutralResonanceMatrix();
+    }
+    const resonance: MaskSentenceResonanceOptions = { targetLanguage, weights };
+    const afterSemantic =
+      semanticFuzzy === undefined
+        ? fw.maskSentence(sourceText, undefined, resonance)
+        : fw.maskSentence(sourceText, semanticFuzzy, resonance);
+    const masked = this.masker.mask(afterSemantic, targetLanguage, weights);
+    return normalizeHomographs(masked);
   }
 
   /** @deprecated Используй prepareStencil(text, targetLanguage, weights?). */

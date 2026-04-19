@@ -86,6 +86,11 @@ export function mergeSpansRaw(spans: FormulaRawSpan[]): FormulaRawSpan[] {
     if (t === 'formula_paren') return 98;
     if (t === 'formula_inline') return 90;
     if (t === 'formula') return 80;
+    /** Greedy monoliths: при равной длине — реестр > ФИО > ИНН/КПП > дата-словами > прочее. */
+    if (t === 'registry_number') return 45;
+    if (t === 'person_full_name') return 44;
+    if (t === 'org_tax_monolith') return 43;
+    if (t === 'date_monolith') return 42;
     return 0;
   };
   const byLength = [...spans].sort((a, b) => {

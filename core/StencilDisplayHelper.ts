@@ -1,38 +1,42 @@
 /* MIT License | Copyright (c) 2026 SERGEI NAZARIAN (SVN) | ALTRO Stencil */
 
 /**
- * Пайплайн UI: textarea → `buildStencilForDisplay` (Sieve: $$ → $ → стандартные сущности) → `buildStencilFromEntities`.
- * Серверный Masker использует Formula-Magnet №0; здесь — слоистое извлечение для UI с теми же приоритетами слияния.
+ * Пайплайн UI: textarea → `buildStencilForDisplay` (Sieve: $$ → $ → сущности по тем же RegExp, что Masker фаза 2) → `buildStencilFromEntities`.
+ * Реестр матчится по **исходному** `sourceText` (как в `Masker.mask`), без «ослепления» blank формул; затем выжигание, прочие монолиты, `MASKER_SECONDARY_REST_SPECS`.
  */
 import { type EntityMatch, type EntityType } from './EntityScanner';
-import { textPrefixHex } from './formulaMagnet';
-import { getMegawattMagnetPatternSource, NUMERIC_MAGNET_BODY_SOURCE } from './dictionaries/UnitRegistry';
+import { blankRangesInText, spanOverlaps, textPrefixHex } from './formulaMagnet';
+import {
+  MASKER_SECONDARY_REST_SPECS,
+  PRIORITY_MONOLITHS_NON_REGISTRY,
+  PRIORITY_REGISTRY_MONOLITH_SPECS,
+} from './MaskerClient';
 
 export interface StencilDisplayResult {
   maskedText: string;
   ipaToEntity: Array<{ ipaId: number; start: number; end: number; type: string }>;
 }
 
-const CURRENCY_SYMBOLS = '(?:\\$|€|£|¥|₽|USD|EUR|GBP|RUB)';
-const MAGNITUDE = '(?:billion|million|trillion|bn|bln|m|mn|mln|млрд|млн|трлн)';
-const MONEY_NUMERIC = NUMERIC_MAGNET_BODY_SOURCE;
-
-const GENERIC_NUMBER_PATTERN: { regex: RegExp; type: EntityType } = {
-  regex: /(?<![\d.])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![\d.])/g,
-  type: 'number',
-};
-
-/** Phase 3: money, percent, numbers (MW + generic), stencil [ID: n] refs — на маскированном workingText. */
-const PHASE3_PATTERNS: Array<{ regex: RegExp; type: EntityType }> = [
-  { regex: new RegExp(`${CURRENCY_SYMBOLS}\\s*${MONEY_NUMERIC}\\s*${MAGNITUDE}?`, 'gi'), type: 'money' },
-  { regex: new RegExp(`${MONEY_NUMERIC}\\s*${MAGNITUDE}`, 'gi'), type: 'money' },
-  { regex: /\d+(?:\.\d+)?%/g, type: 'percent' },
-  { regex: new RegExp(getMegawattMagnetPatternSource(''), 'giu'), type: 'number' },
-  GENERIC_NUMBER_PATTERN,
-  { regex: /\[\s*ID\s*:\s*\d+\]/gi, type: 'id_tag' },
-];
-
 const MAX_REGEX_EXEC = 10000;
+
+function maskerSecondaryTypeToEntityType(maskerType: string): EntityType {
+  if (maskerType === 'formula') return 'formula_paren';
+  if (maskerType === 'money') return 'money';
+  if (maskerType === 'percent') return 'percent';
+  if (maskerType === 'date_monolith') return 'date';
+  if (maskerType === 'date' || maskerType === 'daterange') return maskerType;
+  if (maskerType === 'unit' || maskerType.startsWith('unit_')) return 'number';
+  if (
+    maskerType === 'registry_number' ||
+    maskerType === 'org_tax_monolith' ||
+    maskerType === 'person_full_name' ||
+    maskerType === 'inn' ||
+    maskerType === 'kpp_code' ||
+    maskerType === 'organization_name'
+  )
+    return 'id_tag';
+  return 'number';
+}
 
 function entityPriorityMerge(t: EntityType): number {
   if (
@@ -44,7 +48,8 @@ function entityPriorityMerge(t: EntityType): number {
     return 100;
   if (t === 'money') return 40;
   if (t === 'percent') return 35;
-  if (t === 'id_tag') return 33;
+  /** Реестр / реквизиты / ФИО — выше сырых чисел при конфликте длины. */
+  if (t === 'id_tag') return 38;
   if (t === 'date' || t === 'daterange') return 30;
   if (t === 'timeref') return 25;
   return 10;
@@ -126,7 +131,7 @@ export function buildStencilFromEntities(sourceText: string, entities: EntityMat
 }
 
 /**
- * Извлечение сущностей для трафарета (формулы, деньги, числа) — без семантического слоя.
+ * Извлечение сущностей для трафарета (формулы, затем те же вторичные паттерны, что Masker).
  */
 function computeStencilEntities(sourceText: string): EntityMatch[] {
   const detectedBlocks: EntityMatch[] = [];
@@ -181,24 +186,52 @@ function computeStencilEntities(sourceText: string): EntityMatch[] {
     reInline.lastIndex = 0;
   }
 
-  // Phase 3 — numbers, money, percents, [ID: n] on masked copy (indices = sourceText)
-  const phase3Raw: EntityMatch[] = [];
-  for (const { regex, type } of PHASE3_PATTERNS) {
-    const re = new RegExp(regex.source, regex.flags);
-    execIter = 0;
-    while ((m = re.exec(workingText)) !== null) {
-      if (++execIter > MAX_REGEX_EXEC) break;
-      const start = m.index;
-      const end = m.index + m[0].length;
-      if (/^\s+$/.test(m[0])) continue;
-      phase3Raw.push({
-        start,
-        end,
-        type,
-        text: sourceText.slice(start, end),
-      });
+  // Phase 3 — как Masker: сначала только реестр, вырезание, затем остальные монолиты, вырезание, затем вторичные паттерны.
+  const collectMaskerSpecs = (
+    text: string,
+    specs: ReadonlyArray<{ source: string; flags: string; type: string; patternName: string }>
+  ): EntityMatch[] => {
+    const raw: EntityMatch[] = [];
+    for (const spec of specs) {
+      const re = new RegExp(spec.source, spec.flags);
+      execIter = 0;
+      while ((m = re.exec(text)) !== null) {
+        if (++execIter > MAX_REGEX_EXEC) break;
+        const start = m.index;
+        const end = m.index + m[0].length;
+        if (/^\s+$/.test(m[0])) continue;
+        raw.push({
+          start,
+          end,
+          type: maskerSecondaryTypeToEntityType(spec.type),
+          text: sourceText.slice(start, end),
+        });
+      }
     }
-  }
+    return raw;
+  };
+
+  const phase3RegistryRaw = collectMaskerSpecs(sourceText, PRIORITY_REGISTRY_MONOLITH_SPECS).filter(
+    (e) =>
+      !detectedBlocks.some(
+        (f) =>
+          (f.type === 'formula_display' || f.type === 'formula_inline') && spanOverlaps(e, f)
+      )
+  );
+  const phase3RegistryMerged = mergeEntityMatches(phase3RegistryRaw);
+  const workingAfterRegistry = blankRangesInText(
+    workingText,
+    phase3RegistryMerged.map((e) => ({ start: e.start, end: e.end }))
+  );
+  const phase3OtherMonoRaw = collectMaskerSpecs(workingAfterRegistry, PRIORITY_MONOLITHS_NON_REGISTRY);
+  const phase3MonolithRaw = [...phase3RegistryRaw, ...phase3OtherMonoRaw];
+  const phase3MonolithMerged = mergeEntityMatches(phase3MonolithRaw);
+  const workingAfterMonolith = blankRangesInText(
+    workingText,
+    phase3MonolithMerged.map((e) => ({ start: e.start, end: e.end }))
+  );
+  const phase3RestRaw = collectMaskerSpecs(workingAfterMonolith, MASKER_SECONDARY_REST_SPECS);
+  const phase3Raw = [...phase3MonolithRaw, ...phase3RestRaw];
   const phase3Merged = mergeEntityMatches(phase3Raw);
   for (const e of phase3Merged) {
     if (typeof window !== 'undefined') {
@@ -309,6 +342,7 @@ function buildStencilFromEntitiesWithSemanticPlain(
 
 /**
  * Семантический слой поверх сущностей: только plain_text сегменты → maskPlain (DIFUZZY / STENCIL LOCK).
+ * @deprecated Для UI-монитора предпочтительно `SovereignController.prepareStencil` (единый пайплайн с Masker).
  */
 export function buildStencilForDisplayWithSemantic(
   sourceText: string,
@@ -319,7 +353,7 @@ export function buildStencilForDisplayWithSemantic(
 }
 
 /**
- * Layered extraction (Sieve): display $$ → inline $ → standard entities on masked working copy.
+ * Layered extraction (Sieve): display $$ → inline $ → стандартные сущности (Masker secondary specs).
  * Реконсиляция: сортировка по start, «вода» plain_text между блоками, контроль длины.
  */
 export function buildStencilForDisplay(sourceText: string): StencilDisplayResult {

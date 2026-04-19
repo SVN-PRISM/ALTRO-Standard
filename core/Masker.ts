@@ -20,6 +20,14 @@ import {
   textPrefixHex,
 } from './formulaMagnet';
 import { microTranscreate } from './microTranscreate';
+import {
+  DATE_MONOLITH_SOURCE,
+  KPP_RU_STANDALONE_SOURCE,
+  ORG_INN_KPP_MONOLITH_SOURCE,
+  ORGANIZATION_ROLE_QUOTED_SOURCE,
+  PERSON_FULL_NAME_GREEDY_SOURCE,
+  REGISTRY_NUMBER_GREEDY_SOURCE,
+} from './maskMonolithPatterns';
 
 const FORMULA_LOGICAL = String.raw`(?:[a-zA-Z\d]+\s*[=≈≠><≥≤]\s*[a-zA-Z\d\s.%+\-]+)`;
 
@@ -51,7 +59,77 @@ const DECIMAL_FRAC = '(?:[.,]\\d+)?';
  * Остальные магниты — сканируют текст только после Formula-Magnet (двухфазно: формулы вычитаются из пересечений).
  * Display/inline LaTeX не входят в этот массив.
  */
-const PATTERN_SPECS_SECONDARY: Array<{ source: string; flags: string; type: string; patternName: string }> = [
+/**
+ * Юрлицо: ООО/ИП/ЗАО/АО/ПАО + название в «ёлочках» или ASCII-кавычках.
+ * Пример: ООО «Вектор-М».
+ */
+const ORGANIZATION_NAME_SOURCE = String.raw`(?:^|(?<![\p{L}\p{N}_]))(?:ООО|ИП|ЗАО|АО|ПАО)\s+(?:«[^»]+»|"[^"]+")(?![\p{L}\p{N}_])`;
+
+export type MaskerSecondarySpec = {
+  source: string;
+  flags: string;
+  type: string;
+  patternName: string;
+};
+
+/** Реестр — отдельная фаза 2a-0: матчится и выжигается до остальных монолитов и до `generic_number`. */
+export const PRIORITY_REGISTRY_MONOLITH_SPECS: ReadonlyArray<MaskerSecondarySpec> = [
+  {
+    source: REGISTRY_NUMBER_GREEDY_SOURCE,
+    flags: 'gu',
+    type: 'registry_number',
+    patternName: 'registry_number',
+  },
+];
+
+/** ФИО / ИНН-КПП / дата-словом — после выжигания реестра. */
+export const PRIORITY_MONOLITHS_NON_REGISTRY: ReadonlyArray<MaskerSecondarySpec> = [
+  {
+    source: PERSON_FULL_NAME_GREEDY_SOURCE,
+    flags: 'gu',
+    type: 'person_full_name',
+    patternName: 'person_full_name',
+  },
+  {
+    source: ORG_INN_KPP_MONOLITH_SOURCE,
+    flags: 'gu',
+    type: 'org_tax_monolith',
+    patternName: 'org_inn_kpp_monolith',
+  },
+  {
+    source: DATE_MONOLITH_SOURCE,
+    flags: 'gu',
+    type: 'date_monolith',
+    patternName: 'date_ru_monolith',
+  },
+];
+
+/** Полный порядок монолитов (UI / логи): реестр первым. */
+export const PRIORITY_MONOLITHS: ReadonlyArray<MaskerSecondarySpec> = [
+  ...PRIORITY_REGISTRY_MONOLITH_SPECS,
+  ...PRIORITY_MONOLITHS_NON_REGISTRY,
+];
+
+/** Фаза 2b: всё после монолитов (те же правила, что раньше шли после ИНН/КПП в одном списке). */
+export const MASKER_SECONDARY_REST_SPECS: ReadonlyArray<MaskerSecondarySpec> = [
+  {
+    source: KPP_RU_STANDALONE_SOURCE,
+    flags: 'gu',
+    type: 'kpp_code',
+    patternName: 'kpp_ru',
+  },
+  {
+    source: ORGANIZATION_ROLE_QUOTED_SOURCE,
+    flags: 'gu',
+    type: 'organization_name',
+    patternName: 'organization_role_quoted',
+  },
+  {
+    source: ORGANIZATION_NAME_SOURCE,
+    flags: 'giu',
+    type: 'organization_name',
+    patternName: 'organization_name',
+  },
   { source: FORMULA_LOGICAL, flags: 'gi', type: 'formula', patternName: 'formula_logical' },
   { source: KPI_METRIC_BODY, flags: 'giu', type: 'kpi_metric', patternName: 'kpi_metric' },
   ...getMaskerUnitPatternSpecs(DECIMAL_FRAC).map((spec, i) => ({
@@ -123,13 +201,19 @@ const PATTERN_SPECS_SECONDARY: Array<{ source: string; flags: string; type: stri
   },
 ];
 
+/** Полный порядок вторичной фазы: монолиты → остальное (единый источник для логов и UI). */
+export const MASKER_SECONDARY_PATTERN_SPECS: ReadonlyArray<MaskerSecondarySpec> = [
+  ...PRIORITY_MONOLITHS,
+  ...MASKER_SECONDARY_REST_SPECS,
+];
+
 /** Полный список для логов (Formula-Magnet — только через collectFormulaMagnetSpansCore). */
 const PATTERN_SPECS_FOR_LOG = [
   { type: 'formula_display', regexp: new RegExp(FORMULA_LATEX_DISPLAY, 'g').toString() },
   { type: 'formula_bracket', regexp: new RegExp(FORMULA_BRACKET, 'g').toString() },
   { type: 'formula_paren', regexp: new RegExp(FORMULA_PAREN, 'g').toString() },
   { type: 'formula_inline', regexp: new RegExp(FORMULA_LATEX_INLINE, 'g').toString() },
-  ...PATTERN_SPECS_SECONDARY.map((s) => ({
+  ...MASKER_SECONDARY_PATTERN_SPECS.map((s) => ({
     type: s.patternName,
     regexp: new RegExp(s.source, s.flags).toString(),
   })),
@@ -206,23 +290,19 @@ export class Masker {
     return collectFormulaMagnetSpansCore(text) as RawSpan[];
   }
 
-  /**
-   * Фаза 2: прочие магниты по тексту с «выжженными» зонами Formula-Magnet (тот же индекс, что у оригинала).
-   */
-  private collectSecondarySpans(scanText: string, originalText: string): RawSpan[] {
+  /** Реестр по **исходному** тексту (до blank формул); индексы совпадают с `originalText` / `scanText`. */
+  private collectRegistrySpansOnly(originalText: string): RawSpan[] {
     const spans: RawSpan[] = [];
-    for (const spec of PATTERN_SPECS_SECONDARY) {
+    for (const spec of PRIORITY_REGISTRY_MONOLITH_SPECS) {
       const re = new RegExp(spec.source, spec.flags);
       let m: RegExpExecArray | null;
       let execIter = 0;
-
-      while ((m = re.exec(scanText)) !== null) {
+      while ((m = re.exec(originalText)) !== null) {
         if (++execIter > MAX_REGEX_EXEC_ITER) {
           console.error(
-            '[Masker] Safety: regex exec exceeded',
+            '[Masker] Safety: registry regex exec exceeded',
             MAX_REGEX_EXEC_ITER,
-            'iterations for pattern',
-            spec.patternName
+            'iterations'
           );
           break;
         }
@@ -240,8 +320,67 @@ export class Masker {
         });
       }
     }
-
     return spans;
+  }
+
+  /**
+   * Фаза 2: прочие магниты по тексту с «выжженными» зонами Formula-Magnet (тот же индекс, что у оригинала).
+   * `registryFromRaw` — совпадения реестра с **полного** текста (до blank формул); не собираются повторно по `scanText`.
+   */
+  private collectSecondarySpans(
+    scanText: string,
+    originalText: string,
+    registryFromRaw: RawSpan[]
+  ): RawSpan[] {
+    const collectFrom = (text: string, specs: ReadonlyArray<MaskerSecondarySpec>): RawSpan[] => {
+      const spans: RawSpan[] = [];
+      for (const spec of specs) {
+        const re = new RegExp(spec.source, spec.flags);
+        let m: RegExpExecArray | null;
+        let execIter = 0;
+
+        while ((m = re.exec(text)) !== null) {
+          if (++execIter > MAX_REGEX_EXEC_ITER) {
+            console.error(
+              '[Masker] Safety: regex exec exceeded',
+              MAX_REGEX_EXEC_ITER,
+              'iterations for pattern',
+              spec.patternName
+            );
+            break;
+          }
+          const full = m[0];
+          if (full.length === 0) {
+            if (re.lastIndex === m.index) re.lastIndex++;
+            continue;
+          }
+          spans.push({
+            start: m.index,
+            end: m.index + full.length,
+            text: originalText.slice(m.index, m.index + full.length),
+            type: spec.type,
+            patternName: spec.patternName,
+          });
+        }
+      }
+      return spans;
+    };
+
+    const registryMerged = this.mergeSpans(registryFromRaw);
+    const scanAfterRegistry = blankRangesInText(
+      scanText,
+      registryMerged.map((s) => ({ start: s.start, end: s.end }))
+    );
+    const otherMonolithSpans = collectFrom(scanAfterRegistry, PRIORITY_MONOLITHS_NON_REGISTRY);
+    const monolithSpans = [...registryFromRaw, ...otherMonolithSpans];
+    const monolithMerged = this.mergeSpans(monolithSpans);
+    /** Зоны монолитов → пробелы той же длины: `generic_number` / даты фазы 2b не видят символы внутри реестра/ФИО/ИНН/даты-словом. */
+    const scanAfterMonolith = blankRangesInText(
+      scanText,
+      monolithMerged.map((s) => ({ start: s.start, end: s.end }))
+    );
+    const restSpans = collectFrom(scanAfterMonolith, MASKER_SECONDARY_REST_SPECS);
+    return [...monolithSpans, ...restSpans];
   }
 
   private mergeSpans(spans: RawSpan[]): RawSpan[] {
@@ -276,11 +415,15 @@ export class Masker {
       }
     }
 
+    const registryFromRaw = this.collectRegistrySpansOnly(text).filter(
+      (s) => !formulaMerged.some((f) => spanOverlaps(s, f))
+    );
+
     const blankedForSecondary = blankRangesInText(
       text,
       formulaMerged.map((s) => ({ start: s.start, end: s.end }))
     );
-    const secondaryRaw = this.collectSecondarySpans(blankedForSecondary, text);
+    const secondaryRaw = this.collectSecondarySpans(blankedForSecondary, text, registryFromRaw);
     if (DEBUG_MASKER) {
       for (const s of secondaryRaw) {
         console.log(`MASKER ATTEMPT: [${s.patternName ?? s.type}] matched length=${s.text.length}`);

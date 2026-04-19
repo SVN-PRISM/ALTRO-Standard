@@ -5,8 +5,27 @@
  * Валидация намерений через 13 доменов (5 внутренних + 8 внешних) перед исполнением.
  */
 
+import { buildResonanceTargetMatrix } from '@core/IntentOrchestrator';
+import { domainWeightsAreNeutral, microTranscreate } from '@core/microTranscreate';
+import {
+  DATE_MONOLITH_SOURCE,
+  ORG_INN_KPP_MONOLITH_SOURCE,
+  PERSON_FULL_NAME_GREEDY_SOURCE,
+  REGISTRY_NUMBER_GREEDY_SOURCE,
+} from '@core/maskMonolithPatterns';
 import type { SemanticFilter } from '@/lib/altro/adapters/sql-adapter';
+import type { DomainWeights } from '@/lib/altroData';
+import { INITIAL_DOMAIN_WEIGHTS } from '@/lib/altroData';
 import { CrystalLoader } from '@/lib/altro/CrystalLoader';
+import { STENCIL_LEXICON_NO_MASK } from '@/security/stencilLexiconPasslist';
+import {
+  oprModulatedPsi,
+  squashCentroidScore,
+  tensorOuterProduct5x8,
+} from '@/security/semanticPrimesTensor';
+
+export type { SemanticPrimeId } from '@/security/semanticPrimesTensor';
+export { SEMANTIC_PRIME_IDS, SEMANTIC_PRIMES_MATRIX } from '@/security/semanticPrimesTensor';
 
 /** Порог резонанса: при TDP < этого значения воронка схлопывается, выполнение блокируется */
 export const TDP_THRESHOLD = 0.85;
@@ -16,6 +35,35 @@ export const LEARNING_MODE = true;
 
 /** Порог аномалии домена: |intent[i] - opr[i]| > этого значения → применяем политику (фильтр WHERE) */
 export const DOMAIN_ANOMALY_THRESHOLD = 0.25;
+
+/** Atom-Ψ ниже этого порога → обязательная маска по домену с max тензорным отклонением */
+const TENSOR_ATOM_PSI_MIN = 0.52;
+
+/** Поверхность сегмента после correctionLoop считается согласованной при Ψ ≥ этого значения */
+const PSI_SEGMENT_CORRECTION_OK = 0.58;
+
+/** Нейтральная директива (все веса 0): ослабление correctionLoop для канцелярского текста без маски. */
+const PSI_SEGMENT_CORRECTION_OK_NEUTRAL = 0.36;
+
+const RESONANCE_CORRECTION_MAX_ITER = 6;
+
+/** Atom-Ψ при нейтральной R / без директивы — мягче, канцелярия проходит без обязательной маски. */
+const TENSOR_ATOM_PSI_MIN_NEUTRAL = 0.38;
+
+/** Токен слова (Unicode letters + optional hyphen/apostrophe chunks). Вынесено из maskSentence из-за парсера TS на литерале RegExp. */
+const MASK_SENTENCE_LETTER_TOKEN_RE = /^\p{L}+(?:[-\x27]\p{L}+)*$/u;
+
+/** Greedy монолиты: реестр и ФИО первыми, затем ИНН+КПП, затем слова (как Masker phase 2). */
+const MASK_SENTENCE_MONOLITH_CHUNK_RE = new RegExp(
+  `((?:${REGISTRY_NUMBER_GREEDY_SOURCE})|(?:${PERSON_FULL_NAME_GREEDY_SOURCE})|(?:${ORG_INN_KPP_MONOLITH_SOURCE})|(?:${DATE_MONOLITH_SOURCE})|` +
+    String.raw`(?:\p{L}+(?:[-\x27]\p{L}+)*)|(?:\s+)|(?:[^\p{L}\s]+))`,
+  'gu'
+);
+
+export type MaskSentenceResonanceOptions = {
+  targetLanguage: string;
+  weights?: DomainWeights;
+};
 
 /** Порядок доменов в 13-векторе: 8 внешних, затем 5 внутренних (Legislative Core) */
 export const DOMAIN_ORDER = [
@@ -68,12 +116,13 @@ export const STENCIL_DOMAIN_THRESHOLDS: Record<(typeof DOMAIN_ORDER)[number], nu
   aesthetics: 0.999,
   technology: 0.999,
   spirituality: 0.25,
-  semantics: 0.21,
-  context: 0.25,
+  /** Выше порог: снижает over-mask общеупотребимых слов (кристалл-синтетика). */
+  semantics: 0.28,
+  context: 0.3,
   /** Forge 1.3 взвешенные центроиды (синтетика / MiniLM): пересмотреть после HF. */
-  intent: 0.15,
+  intent: 0.22,
   imagery: 0.999,
-  ethics: 0.22,
+  ethics: 0.26,
 };
 
 /** Домены, участвующие в триггере Stencil (подмножество DOMAIN_ORDER) */
@@ -84,18 +133,6 @@ export const STENCIL_CRITICAL_DOMAIN_KEYS: readonly (typeof DOMAIN_ORDER)[number
   'intent',
   'ethics',
 ] as const;
-
-/** Индексы и ключи для проверки без indexOf в цикле (порядок = приоритет триггера) */
-const STENCIL_CRITICAL_PAIRS: ReadonlyArray<{
-  idx: number;
-  key: (typeof DOMAIN_ORDER)[number];
-}> = [
-  { idx: 7, key: 'spirituality' },
-  { idx: 8, key: 'semantics' },
-  { idx: 9, key: 'context' },
-  { idx: 10, key: 'intent' },
-  { idx: 12, key: 'ethics' },
-];
 
 /** Минимальный контракт токена для проверки Смысловой печати (без импорта TokenManager) */
 export interface LockedTokenRef {
@@ -195,30 +232,10 @@ export function domainWeightsToVector(weights: {
   ];
 }
 
-/** Косинусное сходство между двумя векторами (нормализованными к единичной длине). */
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length || a.length === 0) return 0;
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom <= 0 ? 0 : Math.max(0, Math.min(1, dot / denom));
-}
-
-function normalizeVector(v: number[]): number[] {
-  const len = Math.sqrt(v.reduce((s, x) => s + x * x, 0));
-  if (len <= 0) return v.map(() => 0);
-  return v.map((x) => x / len);
-}
-
 const DIFUZZY_THRESHOLD_FACTOR = 0.85;
 /** Временно снижено (v1.5 tweak): OOV typo → mask при sim > порога (напр. turbopressureoo ~0.545). */
-const DIFUZZY_SIMILARITY_MIN = 0.5;
+/** Выше — меньше ложных OOV-маск по edit-similarity к якорям intent/context. */
+const DIFUZZY_SIMILARITY_MIN = 0.58;
 const DIFUZZY_INTENT_ANCHORS = [
   'intent',
   'intention',
@@ -237,6 +254,60 @@ const DIFUZZY_CONTEXT_ANCHORS = [
   'контекст',
   'ситуация',
 ] as const;
+
+/**
+ * Предыдущий токен (слово) — ролевой якорь: следующее слово проверяется с пониженным порогом критических осей (ФИО после роли).
+ */
+const STENCIL_PII_ROLE_ANCHORS = new Set(
+  [
+    'координатор',
+    'координатора',
+    'координатором',
+    'самозанятый',
+    'самозанятая',
+    'самозанятого',
+    'самозанятой',
+    'лицо',
+    'лица',
+    'лицом',
+    'сторона',
+    'стороны',
+    'стороной',
+  ].map((w) => w.normalize('NFC').toLowerCase())
+);
+
+/** < 1 — порог ниже, чувствительность к маске выше (умножается на базовый порог домена). */
+const STENCIL_POST_ANCHOR_THRESHOLD_SCALE = 0.88;
+
+/** Первое слово тройки «Фамилия Имя Отчество» не должно быть типичным заголовком договора. */
+const TRIPLE_FIO_EXCLUDED_FIRST = new Set(
+  [
+    'дополнительное',
+    'настоящее',
+    'настоящим',
+    'общие',
+    'следующие',
+    'прочие',
+    'соглашение',
+  ].map((w) => w.normalize('NFC').toLowerCase())
+);
+
+function isTitleCaseWordToken(s: string): boolean {
+  return /^\p{Lu}\p{L}+$/u.test(s);
+}
+
+function isThreeWordTitleFioSequence(parts: readonly string[], i: number): boolean {
+  if (i + 4 >= parts.length) return false;
+  const w0 = parts[i]!;
+  const sp1 = parts[i + 1]!;
+  const w1 = parts[i + 2]!;
+  const sp2 = parts[i + 3]!;
+  const w2 = parts[i + 4]!;
+  if (!/^\s+$/.test(sp1) || !/^\s+$/.test(sp2)) return false;
+  if (!isTitleCaseWordToken(w0) || !isTitleCaseWordToken(w1) || !isTitleCaseWordToken(w2)) return false;
+  if (TRIPLE_FIO_EXCLUDED_FIRST.has(w0.normalize('NFC').toLowerCase())) return false;
+  return true;
+}
 
 function normalizedEditSimilarity(a: string, b: string): number {
   if (!a || !b) return 0;
@@ -297,29 +368,87 @@ export class SemanticFirewall {
   /** ALTRO 1.5 UI/CLI: потоковая диагностика последних решений Stencil. */
   private readonly diagnosticLog: DiagnosticLogEntry[] = [];
 
+  /** R: целевая матрица резонанса 5×8 (директива), row-major. */
+  private readonly resonanceTargetTensor = new Float32Array(40);
+
+  /** OPR в тензорной форме W_int ⊗ W_ext (синхрон с oprVector). */
+  private readonly oprTensor = new Float32Array(40);
+
+  private readonly tensorObsScratch = new Float32Array(40);
+  private readonly harmonicPhaseTensor = new Float32Array(40);
+  private readonly scratchExt8 = new Float32Array(8);
+  private readonly scratchInt5 = new Float32Array(5);
+  private readonly segmentStencilScores = new Float32Array(13);
+  private readonly segmentObsTensor = new Float32Array(40);
+
+  /** Контекст текущего maskSentence (нейтральная директива / EN mirror). */
+  private activeMaskResonanceCtx: MaskSentenceResonanceOptions | undefined;
+
   static getInstance(): SemanticFirewall {
     if (SemanticFirewall.instance == null) {
-      SemanticFirewall.instance = new SemanticFirewall();
+      const fw = new SemanticFirewall();
+      fw.bootstrapTensorLayer();
+      SemanticFirewall.instance = fw;
     }
     return SemanticFirewall.instance;
+  }
+
+  /** Нейтральная R и OPR-тензор при старте (до директивы). */
+  private bootstrapTensorLayer(): void {
+    this.rebuildOprTensorFromOprVector();
+    this.setResonanceTargetMatrix(buildResonanceTargetMatrix(INITIAL_DOMAIN_WEIGHTS));
+  }
+
+  private rebuildOprTensorFromOprVector(): void {
+    for (let j = 0; j < 8; j++) {
+      this.scratchExt8[j] = this.oprVector[j] ?? 0.5;
+    }
+    for (let i = 0; i < 5; i++) {
+      this.scratchInt5[i] = this.oprVector[8 + i] ?? 0.5;
+    }
+    tensorOuterProduct5x8(this.scratchInt5, this.scratchExt8, this.oprTensor);
+  }
+
+  /** Установить матрицу R из IntentOrchestrator (копия первых 40 элементов). */
+  setResonanceTargetMatrix(matrix: Float32Array): void {
+    if (matrix.length < 40) return;
+    this.resonanceTargetTensor.set(matrix.subarray(0, 40));
+  }
+
+  /**
+   * KSHERQ Phase 1: мета-калибровка OPR и R по директиве (весам доменов).
+   * Вызывать перед maskSentence / prepareStencil при известной директиве.
+   */
+  primeDirectiveCalibration(weights: DomainWeights): void {
+    this.syncOprFromWeights(weights);
+    this.rebuildOprTensorFromOprVector();
+    this.setResonanceTargetMatrix(buildResonanceTargetMatrix(weights));
+  }
+
+  /** R из нулевой/пустой директивы (синглтон без весов). */
+  applyNeutralResonanceMatrix(): void {
+    this.setResonanceTargetMatrix(buildResonanceTargetMatrix(INITIAL_DOMAIN_WEIGHTS));
   }
 
   /** Установить OPR из 13-вектора (например, после DATA SYNC). */
   setOprVector(vector: number[]): void {
     if (vector.length >= 13) {
       this.oprVector = vector.slice(0, 13);
+      this.rebuildOprTensorFromOprVector();
     }
   }
 
   /** Синхронизировать OPR с текущими весами доменов (вызов при DATA SYNC). */
   syncOprFromWeights(weights: Parameters<typeof domainWeightsToVector>[0]): void {
     this.oprVector = domainWeightsToVector(weights);
+    this.rebuildOprTensorFromOprVector();
   }
 
   /** Полный сброс к нейтральному эталону (Full Semantic Reset). Очищает OPR и lastReportLine. */
   resetToDefault(): void {
     this.oprVector = DOMAIN_ORDER.map(() => 0.5);
     this.lastReportLine = '';
+    this.bootstrapTensorLayer();
   }
 
   /** ALTRO 1.4 CLI: переопределить порог критических осей; null — сброс к встроенным значениям. */
@@ -387,15 +516,81 @@ export class SemanticFirewall {
     return { mask: null, detail: `sim=${bestScore.toFixed(3)} below ${DIFUZZY_SIMILARITY_MIN}` };
   }
 
+  private argmaxDeviationDomainKey(): (typeof DOMAIN_ORDER)[number] {
+    let best = -1;
+    let bestK = 0;
+    for (let k = 0; k < 40; k++) {
+      const a = this.tensorObsScratch[k]!;
+      const b = this.resonanceTargetTensor[k]!;
+      const dev = Math.abs(a - b) / (1 + b + 1e-9);
+      if (dev > best) {
+        best = dev;
+        bestK = k;
+      }
+    }
+    const col = bestK % 8;
+    const row = (bestK / 8) | 0;
+    if (Math.abs(this.scratchInt5[row]!) >= Math.abs(this.scratchExt8[col]!)) {
+      return DOMAIN_ORDER[8 + row]!;
+    }
+    return DOMAIN_ORDER[col]!;
+  }
+
+  private measureSurfaceWordPsi(word: string, isFuzzy: boolean): number {
+    const normalized = word.normalize('NFC').toLowerCase().trim();
+    if (!normalized) return 1;
+    const crystal = CrystalLoader.getInstance();
+    if (!crystal.isReady()) return 1;
+    const v = crystal.getVector(normalized);
+    if (!v) return isFuzzy ? 0.45 : 1;
+    crystal.dotCentroidsInPlace(v, this.segmentStencilScores);
+    for (let j = 0; j < 8; j++) {
+      this.scratchExt8[j] = squashCentroidScore(this.segmentStencilScores[j]!);
+    }
+    for (let i = 0; i < 5; i++) {
+      this.scratchInt5[i] = squashCentroidScore(this.segmentStencilScores[8 + i]!);
+    }
+    tensorOuterProduct5x8(this.scratchInt5, this.scratchExt8, this.segmentObsTensor);
+    return oprModulatedPsi(this.segmentObsTensor, this.resonanceTargetTensor);
+  }
+
+  private runResonanceCorrectionLoop(
+    word: string,
+    isFuzzy: boolean,
+    targetLanguage: string,
+    weights: DomainWeights | undefined,
+    segmentOkThreshold: number
+  ): string {
+    let w = word;
+    for (let iter = 0; iter < RESONANCE_CORRECTION_MAX_ITER; iter++) {
+      const psi = this.measureSurfaceWordPsi(w, isFuzzy);
+      if (psi >= segmentOkThreshold) return w;
+      const next = microTranscreate(w, 'resonance_refine', targetLanguage, weights);
+      if (next === w) return w;
+      w = next;
+    }
+    return w;
+  }
+
   /**
-   * Stencil Logic (ALTRO_CRYSTAL_v1): эмбеддинг из кристалла → S_k = V·C_k → пороги по доменам.
+   * Stencil Logic (KSHERQ): эмбеддинг → S_k = V·C_k → тензор W_int⊗W_ext → Ψ = OPR_M(T,R).
    * Классификация без LLM (нужен заранее загруженный {@link CrystalLoader}).
    *
-   * @returns `[ID:MASK_<domain>]` при превышении порога на критической оси, иначе `null` (OOV / кристалл не готов / нет триггера).
+   * @returns литерал ID:MASK_* при низком Ψ относительно R, иначе null (OOV / кристалл не готов / нет триггера).
    */
-  processAtom(word: string, isFuzzy = this.isFuzzy): string | null {
+  processAtom(word: string, isFuzzy = this.isFuzzy, criticalThresholdScale = 1): string | null {
     const normalized = word.normalize('NFC').toLowerCase().trim();
     if (!normalized) {
+      return null;
+    }
+
+    if (STENCIL_LEXICON_NO_MASK.has(normalized)) {
+      this.pushDiagnostic({
+        token: normalized,
+        mode: isFuzzy ? 'difuzzy' : 'strict',
+        event: 'pass',
+        detail: 'lexicon_no_mask',
+      });
       return null;
     }
 
@@ -436,27 +631,36 @@ export class SemanticFirewall {
 
     crystal.dotCentroidsInPlace(v, this.stencilScores);
 
-    for (let i = 0; i < STENCIL_CRITICAL_PAIRS.length; i++) {
-      const { idx, key } = STENCIL_CRITICAL_PAIRS[i]!;
-      let threshold = this.stencilCriticalThresholdOverride ?? STENCIL_DOMAIN_THRESHOLDS[key];
-      if (isFuzzy) threshold *= DIFUZZY_THRESHOLD_FACTOR;
-      if (this.stencilScores[idx]! >= threshold) {
-        const mask = `[ID:MASK_${key}]`;
-        this.pushDiagnostic({
-          token: normalized,
-          mode: isFuzzy ? 'difuzzy' : 'strict',
-          event: 'mask',
-          detail: `${key}: score=${this.stencilScores[idx]!.toFixed(3)} threshold=${threshold.toFixed(3)}`,
-        });
-        return mask;
-      }
+    for (let j = 0; j < 8; j++) {
+      this.scratchExt8[j] = squashCentroidScore(this.stencilScores[j]!);
+    }
+    for (let i = 0; i < 5; i++) {
+      this.scratchInt5[i] = squashCentroidScore(this.stencilScores[8 + i]!);
+    }
+    tensorOuterProduct5x8(this.scratchInt5, this.scratchExt8, this.tensorObsScratch);
+    const psiTensor = oprModulatedPsi(this.tensorObsScratch, this.resonanceTargetTensor);
+    const neutralDirective = domainWeightsAreNeutral(this.activeMaskResonanceCtx?.weights);
+    const atomMin = neutralDirective ? TENSOR_ATOM_PSI_MIN_NEUTRAL : TENSOR_ATOM_PSI_MIN;
+    const psiPassBar = atomMin / Math.max(1e-9, criticalThresholdScale);
+    // DIFUZZY: бар Psi выше (как пониженный порог dot-осей в legacy), больше масок при fuzzy.
+    const bar = isFuzzy ? psiPassBar / DIFUZZY_THRESHOLD_FACTOR : psiPassBar;
+    if (psiTensor < bar) {
+      const key = this.argmaxDeviationDomainKey();
+      const mask = `[ID:MASK_${key}]`;
+      this.pushDiagnostic({
+        token: normalized,
+        mode: isFuzzy ? 'difuzzy' : 'strict',
+        event: 'mask',
+        detail: `tensor_Psi=${psiTensor.toFixed(3)} bar=${bar.toFixed(3)} => ${mask}`,
+      });
+      return mask;
     }
 
     this.pushDiagnostic({
       token: normalized,
       mode: isFuzzy ? 'difuzzy' : 'strict',
       event: 'pass',
-      detail: 'no critical threshold crossed',
+      detail: `tensor_Psi=${psiTensor.toFixed(3)} >= bar=${bar.toFixed(3)}`,
     });
     return null;
   }
@@ -464,27 +668,56 @@ export class SemanticFirewall {
   /**
    * Потоковая трассировка трафарета: слова → {@link processAtom}; маска вместо слова при триггере;
    * пробелы и пунктуация без изменений.
+   * @param resonance — optional correctionLoop (microTranscreate) перед atom-Ψ.
    */
-  maskSentence(text: string, isFuzzy = this.isFuzzy): string {
+  maskSentence(text: string, isFuzzy = this.isFuzzy, resonance?: MaskSentenceResonanceOptions): string {
     if (!text) {
       return text;
     }
-    const re = /(\p{L}+(?:[-']\p{L}+)*|\s+|[^\p{L}\s]+)/gu;
-    const parts = text.match(re);
-    if (!parts) {
-      return text;
-    }
-    let out = '';
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i]!;
-      if (/^\p{L}+(?:[-']\p{L}+)*$/u.test(part)) {
-        const mask = this.processAtom(part, isFuzzy);
-        out += mask ?? part;
-      } else {
-        out += part;
+    this.activeMaskResonanceCtx = resonance;
+    try {
+      const parts = [...text.matchAll(MASK_SENTENCE_MONOLITH_CHUNK_RE)].map((m) => m[1]!);
+      if (parts.length === 0) {
+        return text;
       }
+      const neutralDirective = domainWeightsAreNeutral(resonance?.weights);
+      const segmentOk = neutralDirective ? PSI_SEGMENT_CORRECTION_OK_NEUTRAL : PSI_SEGMENT_CORRECTION_OK;
+      let out = '';
+      let prevLetterNorm: string | null = null;
+      let i = 0;
+      while (i < parts.length) {
+        if (isThreeWordTitleFioSequence(parts, i)) {
+          out += parts[i]! + parts[i + 1]! + parts[i + 2]! + parts[i + 3]! + parts[i + 4]!;
+          prevLetterNorm = parts[i + 4]!.normalize('NFC').toLowerCase();
+          i += 5;
+          continue;
+        }
+        const part = parts[i]!;
+        if (MASK_SENTENCE_LETTER_TOKEN_RE.test(part)) {
+          const postAnchor = prevLetterNorm !== null && STENCIL_PII_ROLE_ANCHORS.has(prevLetterNorm);
+          const scale = postAnchor ? STENCIL_POST_ANCHOR_THRESHOLD_SCALE : 1;
+          let surface = part;
+          if (resonance?.targetLanguage) {
+            surface = this.runResonanceCorrectionLoop(
+              part,
+              isFuzzy,
+              resonance.targetLanguage,
+              resonance.weights,
+              segmentOk
+            );
+          }
+          const mask = this.processAtom(surface, isFuzzy, scale);
+          out += mask ?? surface;
+          prevLetterNorm = surface.normalize('NFC').toLowerCase();
+        } else {
+          out += part;
+        }
+        i += 1;
+      }
+      return out;
+    } finally {
+      this.activeMaskResonanceCtx = undefined;
     }
-    return out;
   }
 
   /**
@@ -493,7 +726,7 @@ export class SemanticFirewall {
    */
   mask(text: string, options?: { useDifuzzy?: boolean }): string {
     const fuzzy = options?.useDifuzzy ?? this.isFuzzy;
-    return this.maskSentence(text, fuzzy);
+    return this.maskSentence(text, fuzzy, undefined);
   }
 
   /**
@@ -510,18 +743,26 @@ export class SemanticFirewall {
   }
 
   /**
-   * Вычисляет резонанс между входящим вектором намерений и OPR.
-   * TDP = косинусное сходство. При TDP < 0.85 — блок.
+   * Psi резонанс намерения: T_int = W_int⊗W_ext из 13-вектора; Phase 1 — гармоническая мета-калибровка с OPR-тензором;
+   * Phase 2 — OPR_M(T_int, H) где H_k = 2 a_k b_k / (a_k+b_k). Без косинуса 13-мерного вектора.
    */
   evaluateResonance(intentVector: number[]): EvaluateResonanceResult {
     const vec = intentVector.length >= 13 ? intentVector.slice(0, 13) : [...this.oprVector];
-    const oprNorm = normalizeVector(this.oprVector);
-    const intentNorm = normalizeVector(vec);
-    const tdp = cosineSimilarity(oprNorm, intentNorm);
+    const extI = this.scratchExt8;
+    const intI = this.scratchInt5;
+    for (let j = 0; j < 8; j++) extI[j] = vec[j] ?? 0.5;
+    for (let i = 0; i < 5; i++) intI[i] = vec[8 + i] ?? 0.5;
+    tensorOuterProduct5x8(intI, extI, this.tensorObsScratch);
+    for (let k = 0; k < 40; k++) {
+      const a = this.tensorObsScratch[k]!;
+      const b = this.oprTensor[k]!;
+      this.harmonicPhaseTensor[k] = (2 * a * b) / (a + b + 1e-12);
+    }
+    const tdp = oprModulatedPsi(this.tensorObsScratch, this.harmonicPhaseTensor);
     const alignmentPercent = Math.round(tdp * 100);
     const isAllowedByTdp = tdp >= TDP_THRESHOLD;
-    
-    let reportLine = `[AL-FIREWALL]: OPR Alignment: ${alignmentPercent}%. TDP Status: ${isAllowedByTdp ? 'STABLE' : 'BLOCKED'}.`;
+
+    let reportLine = `[AL-FIREWALL]: Tensor Psi: ${alignmentPercent}%. TDP Status: ${isAllowedByTdp ? 'STABLE' : 'BLOCKED'}.`;
     let allowed = isAllowedByTdp;
 
     if (!isAllowedByTdp && LEARNING_MODE) {

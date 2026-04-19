@@ -1,6 +1,13 @@
 /* MIT License | Copyright (c) 2026 SERGEI NAZARIAN (SVN) | ALTRO Stencil */
 
-import { INITIAL_DOMAIN_WEIGHTS, type DomainWeights } from '@/lib/altroData';
+import type { AltroCommandInterfaceDirective } from '@/lib/altroUniversalSystemPrompt';
+import {
+  EXTERNAL_DOMAIN_KEYS,
+  INITIAL_DOMAIN_WEIGHTS,
+  INTERNAL_DOMAIN_KEYS,
+  type DomainWeights,
+} from '@/lib/altroData';
+import { RESONANCE_MATRIX_LEN, tensorOuterProduct5x8 } from '@/security/semanticPrimesTensor';
 
 /** Все ключи доменов (порядок как в DomainWeights). */
 const DOMAIN_KEYS = [
@@ -236,14 +243,48 @@ function resolveWeightsFromLegacy(haystack: string): DomainWeights {
   return out;
 }
 
+/** `userIntent` / директива → принудительный режим VALIDATE на сервере (синхронно с /api/transcreate). */
+export function userIntentForcesValidateMode(intent: string): boolean {
+  const s = intent.trim();
+  if (!s) return false;
+  const lower = s.toLowerCase();
+  return (
+    s.includes('аудит') ||
+    s.includes('проверка') ||
+    s.includes('сверка') ||
+    lower.includes('finance') ||
+    lower.includes('validate')
+  );
+}
+
+/**
+ * Режим VALIDATE: фиксированные оси для матрицы калибровки (протокол целостности / HAVASTI).
+ * Веса 1.0 на semantics / context / ethics и spirituality задаются в соответствии с Золотым Стандартом;
+ * метрология якорей — константа `GOLDEN_ANCHORS` в `core/manifests/golden_standard.ts`.
+ */
+function applyValidateProtocolWeights(w: DomainWeights): void {
+  w.semantics = 1.0;
+  w.context = 1.0;
+  w.imagery = 0.0;
+  w.ethics = 1.0;
+  w.spirituality = 1.0;
+}
+
+export type ResolveWeightsFromIntentOpts = {
+  commandInterface?: AltroCommandInterfaceDirective;
+};
+
 /**
  * Автоматическое определение доменных весов по тексту намерения (command line / [USER_DIRECTIVE]).
  * Структурированная директива `[ALTRO: key=value, ...]` имеет приоритет; иначе — INTENT_PROFILES (keyword).
+ * При `commandInterface === 'VALIDATE'` накладываются принудительные веса семантики/контекста/этики/духовности.
  */
-export function resolveWeightsFromIntent(intent: string): DomainWeights {
+export function resolveWeightsFromIntent(intent: string, opts?: ResolveWeightsFromIntentOpts): DomainWeights {
   const trimmed = intent.trim();
   if (!trimmed) {
-    return { ...INITIAL_DOMAIN_WEIGHTS };
+    const empty = { ...INITIAL_DOMAIN_WEIGHTS };
+    if (opts?.commandInterface === 'VALIDATE') applyValidateProtocolWeights(empty);
+    return empty;
   }
 
   const haystackForLegacy = stripAllAltroBlocksFromText(trimmed).toLowerCase().replace(/\s+/g, ' ').trim();
@@ -251,14 +292,18 @@ export function resolveWeightsFromIntent(intent: string): DomainWeights {
 
   const altroMatch = mergedForStructured.match(ALTRO_BLOCK_RE);
   if (!altroMatch) {
-    return resolveWeightsFromLegacy(haystackForLegacy);
+    const legacy = resolveWeightsFromLegacy(haystackForLegacy);
+    if (opts?.commandInterface === 'VALIDATE') applyValidateProtocolWeights(legacy);
+    return legacy;
   }
 
   const inner = (altroMatch[1] ?? '').trim();
   const out: DomainWeights = { ...INITIAL_DOMAIN_WEIGHTS };
 
   if (!inner) {
-    return resolveWeightsFromLegacy(haystackForLegacy);
+    const legacy = resolveWeightsFromLegacy(haystackForLegacy);
+    if (opts?.commandInterface === 'VALIDATE') applyValidateProtocolWeights(legacy);
+    return legacy;
   }
 
   const { matrixMult, hadWeightKey } = applyAltroKeyValuePairs(inner, out);
@@ -270,9 +315,11 @@ export function resolveWeightsFromIntent(intent: string): DomainWeights {
     if (hadWeightKey) {
       applyMatrixMultiplier(legacy, matrixMult);
     }
+    if (opts?.commandInterface === 'VALIDATE') applyValidateProtocolWeights(legacy);
     return legacy;
   }
 
+  if (opts?.commandInterface === 'VALIDATE') applyValidateProtocolWeights(out);
   return out;
 }
 
@@ -284,4 +331,30 @@ export function formatIntentWeightsForLog(w: DomainWeights): Record<string, numb
   }
   console.log('[ALTRO][Orchestrator] Applied Weights from Directive:', JSON.stringify(o));
   return o;
+}
+
+function externalDirectiveSlot(x: number): number {
+  return x == null || Number.isNaN(x) ? 0.5 : Math.max(0, Math.min(1, (x + 1) / 2));
+}
+
+function internalDirectiveSlot(x: number): number {
+  return x == null || Number.isNaN(x) ? 0.5 : Math.max(0, Math.min(1, x));
+}
+
+/**
+ * Resonance Target Matrix R = W_int ⊗ W_ext (5×8 row-major) из директивы.
+ * Основа для SemanticFirewall.processAtom после setResonanceTargetMatrix.
+ */
+export function buildResonanceTargetMatrix(weights: DomainWeights): Float32Array {
+  const ext = new Float32Array(8);
+  const int = new Float32Array(5);
+  for (let j = 0; j < 8; j++) {
+    ext[j] = externalDirectiveSlot(weights[EXTERNAL_DOMAIN_KEYS[j]!]!);
+  }
+  for (let i = 0; i < 5; i++) {
+    int[i] = internalDirectiveSlot(weights[INTERNAL_DOMAIN_KEYS[i]!]!);
+  }
+  const out = new Float32Array(RESONANCE_MATRIX_LEN);
+  tensorOuterProduct5x8(int, ext, out);
+  return out;
 }

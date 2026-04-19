@@ -110,7 +110,8 @@ function scenarioC(): Scenario {
     },
   });
 
-  const neutralHasCalibration = neutralPrompt.includes('no domain emphasis was inferred');
+  const neutralHasCalibration =
+    neutralPrompt.includes('no domain emphasis') && neutralPrompt.includes('MATRIX (neutral)');
   const shiftedHasDomains = shiftedPrompt.includes('technology (100%)') && shiftedPrompt.includes('politics (100%)');
   const promptsDiffer = neutralPrompt !== shiftedPrompt;
 

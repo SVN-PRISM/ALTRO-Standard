@@ -1,11 +1,18 @@
 /* MIT License | Copyright (c) 2026 SERGEI NAZARIAN (SVN) | ALTRO Stencil */
 
-import type { DomainWeights } from '@/lib/altroData';
+import { INITIAL_DOMAIN_WEIGHTS, type DomainWeights } from '@/lib/altroData';
+import { transliterateCyrillicToLatinPcgn } from './cyrillicTransliterate';
 import { isValidInlineFormulaBody } from './formulaMagnet';
 import { localizeUnit, NUMERIC_MAGNET_BODY_SOURCE, resolveUnitIdFromCapture } from './dictionaries/UnitRegistry';
 import { parseDecimalNumericString } from './parseDecimalNumeric';
 
 export { parseDecimalNumericString } from './parseDecimalNumeric';
+
+/** Все оси домена 0 — нет активной директивы (KSHERQ relaxation в SemanticFirewall). */
+export function domainWeightsAreNeutral(weights?: DomainWeights): boolean {
+  if (!weights) return true;
+  return (Object.keys(INITIAL_DOMAIN_WEIGHTS) as (keyof DomainWeights)[]).every((k) => (weights[k] ?? 0) === 0);
+}
 
 /**
  * Micro-transcreation: dates, numbers, money, percent → target locale surface form.
@@ -37,6 +44,53 @@ export function resolveLocaleTag(targetLanguage: string): string {
   return 'ru-RU';
 }
 
+/** PCGN только внутри сегмента (без глобального trim/squash всей строки). */
+function transliterateSegmentPcgn(s: string): string {
+  const t = transliterateCyrillicToLatinPcgn(s);
+  return t.replace(/\s+/g, ' ').trim();
+}
+
+/** Заказчик/Поставщик + зеркало EN: роль + юр. префикс (АО→JSC …) + кавычки с PCGN. */
+function mirrorOrganizationRoleAndNameEn(v: string): string {
+  const norm = v.normalize('NFC').trim();
+  const roleHead = /^(Заказчик|Поставщик|заказчик|поставщик)/u.exec(norm);
+  if (!roleHead) {
+    return transliterateCyrillicToLatinPcgn(norm);
+  }
+  const roleEn = /^заказчик$/iu.test(roleHead[1]) ? 'Customer' : 'Supplier';
+  let tail = norm.slice(roleHead[0].length);
+  const sep = tail.match(/^\s*(?:\p{Pd}+|:)\s*/u);
+  if (!sep) {
+    return transliterateCyrillicToLatinPcgn(norm);
+  }
+  tail = tail.slice(sep[0].length).trimStart();
+  tail = translateRuLegalEntityPrefix(tail);
+  tail = transliterateQuotedCyrillicInPlace(tail);
+  /** Единый em dash как в канцелярском зеркале. */
+  return `${roleEn} \u2014 ${tail}`.replace(/\s+/g, ' ').trim();
+}
+
+function translateRuLegalEntityPrefix(s: string): string {
+  const pairs: Array<[RegExp, string]> = [
+    [/^(АО)\s+/iu, 'JSC '],
+    [/^(ООО)\s+/iu, 'LLC '],
+    [/^(ЗАО)\s+/iu, 'JSC '],
+    [/^(ПАО)\s+/iu, 'PJSC '],
+    [/^(ИП)\s+/iu, 'IE '],
+  ];
+  for (const [re, en] of pairs) {
+    if (re.test(s)) return s.replace(re, en);
+  }
+  return s;
+}
+
+/** «…» или "…" — кириллица внутри через PCGN; «ёлочки» → ASCII-кавычки. */
+function transliterateQuotedCyrillicInPlace(s: string): string {
+  return s
+    .replace(/"([^"]*)"/gu, (_, inner: string) => `"${transliterateSegmentPcgn(inner)}"`)
+    .replace(/«([^»]*)»/gu, (_, inner: string) => `"${transliterateSegmentPcgn(inner)}"`);
+}
+
 /** Не трогает запятые/точки в суммах; только переводы строк, скобки-метки, эмодзи-щит, схлопывание пробелов. */
 function sanitizeForTagDisplay(s: string): string {
   return s
@@ -48,6 +102,37 @@ function sanitizeForTagDisplay(s: string): string {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 160);
+}
+
+const RU_GENITIVE_MONTH_TO_UTC: Readonly<Record<string, number>> = {
+  января: 0,
+  февраля: 1,
+  марта: 2,
+  апреля: 3,
+  мая: 4,
+  июня: 5,
+  июля: 6,
+  августа: 7,
+  сентября: 8,
+  октября: 9,
+  ноября: 10,
+  декабря: 11,
+};
+
+/** «15 января 2026» → UTC midnight (как ISO/DMY в parseDateLike). */
+function parseRussianGenitiveDate(raw: string): Date | null {
+  const v = raw.trim();
+  const m =
+    /^(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+(\d{4})$/iu.exec(
+      v
+    );
+  if (!m) return null;
+  const month = RU_GENITIVE_MONTH_TO_UTC[m[2].toLowerCase()];
+  if (month === undefined) return null;
+  const day = +m[1];
+  const year = +m[3];
+  const d = new Date(Date.UTC(year, month, day));
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 function parseDateLike(raw: string): Date | null {
@@ -293,7 +378,17 @@ function localizePlainNumber(raw: string, locale: string): string {
  */
 export function inferEntityTypeFromValue(
   raw: string
-): 'date' | 'daterange' | 'percent' | 'money' | 'unit' | 'generic_number' | 'formula' | 'kpi_metric' | 'unknown' {
+):
+  | 'date'
+  | 'daterange'
+  | 'percent'
+  | 'money'
+  | 'unit'
+  | 'generic_number'
+  | 'registry_number'
+  | 'formula'
+  | 'kpi_metric'
+  | 'unknown' {
   const v = raw.trim();
   if (!v) return 'unknown';
   if (/^\$\$(?:[\s\S]*?)\$\$$/.test(v)) return 'formula';
@@ -305,6 +400,7 @@ export function inferEntityTypeFromValue(
     if (isValidInlineFormulaBody(inner)) return 'formula';
   }
   if (/(?:[a-zA-Z\d]+\s*[=≈≠><≥≤]\s*[a-zA-Z\d\s.%+\-]+)/i.test(v) && /[=≈≠><≥≤]/.test(v)) return 'formula';
+  if (parseRussianGenitiveDate(v)) return 'date';
   if (parseDateLike(v)) return 'date';
   if (/^\d{4}\s*-\s*\d{4}$/.test(v)) return 'daterange';
   if (/^[\d.,]+\s*%$/.test(v)) return 'percent';
@@ -317,6 +413,10 @@ export function inferEntityTypeFromValue(
   }
   if (new RegExp(`^[\\d.,]+(?:\\.[\\d]+)?\\s*${MAG_WORD}`, 'i').test(v)) return 'money';
   if (new RegExp(`^${NUMERIC_MAGNET_BODY_SOURCE}$`, 'u').test(v)) return 'generic_number';
+  /** № / U+2116 / No. + идентификатор со слешем — см. Masker `REGISTRY_NUMBER_SOURCE`. */
+  if (/^(?:\u2116|№|No\.?)\s*\S+$/u.test(v)) {
+    return 'registry_number';
+  }
   return 'unknown';
 }
 
@@ -340,6 +440,14 @@ function resolveEffectiveType(
   | 'standard_code'
   | 'pii_email'
   | 'semantic_anchor'
+  | 'registry_number'
+  | 'date_monolith'
+  | 'person_full_name'
+  | 'inn'
+  | 'kpp_code'
+  | 'organization_name'
+  | 'org_tax_monolith'
+  | 'resonance_refine'
   | 'unknown' {
   if (
     declared === 'date' ||
@@ -357,7 +465,15 @@ function resolveEffectiveType(
     declared === 'id_tag' ||
     declared === 'standard_code' ||
     declared === 'pii_email' ||
-    declared === 'semantic_anchor'
+    declared === 'semantic_anchor' ||
+    declared === 'registry_number' ||
+    declared === 'date_monolith' ||
+    declared === 'person_full_name' ||
+    declared === 'inn' ||
+    declared === 'kpp_code' ||
+    declared === 'organization_name' ||
+    declared === 'org_tax_monolith' ||
+    declared === 'resonance_refine'
   ) {
     return declared;
   }
@@ -381,7 +497,13 @@ export function microTranscreate(
 
   switch (effectiveType) {
     case 'date': {
-      const d = parseDateLike(v);
+      const d = parseDateLike(v) ?? parseRussianGenitiveDate(v);
+      return d
+        ? sanitizeForTagDisplay(formatDate(d, locale, weights))
+        : sanitizeForTagDisplay(v);
+    }
+    case 'date_monolith': {
+      const d = parseRussianGenitiveDate(v) ?? parseDateLike(v);
       return d
         ? sanitizeForTagDisplay(formatDate(d, locale, weights))
         : sanitizeForTagDisplay(v);
@@ -412,6 +534,40 @@ export function microTranscreate(
       return sanitizeForTagDisplay(v);
     case 'semantic_anchor':
       return sanitizeForTagDisplay(v);
+    case 'registry_number':
+      return sanitizeForTagDisplay(v);
+    case 'person_full_name': {
+      const lang = targetLanguage.trim().toLowerCase();
+      if (lang === 'en' || lang.startsWith('en-')) {
+        const mirrored = transliterateCyrillicToLatinPcgn(v);
+        console.log('[ALTRO_MIRROR] person_full_name transliteration:', JSON.stringify(v), '→', JSON.stringify(mirrored));
+        return sanitizeForTagDisplay(mirrored);
+      }
+      return sanitizeForTagDisplay(v);
+    }
+    case 'organization_name': {
+      const lang = targetLanguage.trim().toLowerCase();
+      if (lang === 'en' || lang.startsWith('en-')) {
+        const trimmed = v.trim();
+        /** Не использовать `\b` после кириллицы: в JS `\w` ASCII-only → `\b` после «Заказчик» не срабатывает. */
+        const isRoleLine = /^(Заказчик|Поставщик|заказчик|поставщик)\s*(?=\p{Pd}+|:)/iu.test(trimmed);
+        const mirrored = isRoleLine
+          ? mirrorOrganizationRoleAndNameEn(trimmed)
+          : transliterateCyrillicToLatinPcgn(trimmed);
+        console.log('[ALTRO_MIRROR] organization_name:', JSON.stringify(v), '→', JSON.stringify(mirrored));
+        return sanitizeForTagDisplay(mirrored);
+      }
+      return sanitizeForTagDisplay(v);
+    }
+    case 'inn':
+    case 'kpp_code':
+    case 'org_tax_monolith':
+      return sanitizeForTagDisplay(v);
+    case 'resonance_refine': {
+      /** Детерминированная микро-нормализация сегмента для итераций Ψ (без LLM). */
+      const n = v.normalize('NFC').replace(/\u00AD/g, '').replace(/\uFEFF/g, '');
+      return sanitizeForTagDisplay(n);
+    }
     default:
       return sanitizeForTagDisplay(localizePlainNumber(v, locale));
   }
