@@ -4,6 +4,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { VoiceService, type SourceLanguageForVoice } from '@/lib/altro/voiceService';
 import { processLocalFile } from '@/lib/altro/fileProcessor';
+import { ALTRO_DEBUG_MODE } from '@/lib/constants';
 
 export interface UseNexusProps {
   sourceLanguage: string;
@@ -19,10 +20,13 @@ export function useNexus({ sourceLanguage, isScanning, isScanningRef, onRunScan,
   const [sourceText, setSourceTextState] = useState('');
   /** Единственная точка записи sourceText (терминал, File Gateway, clear). Без slice/sanitize. */
   const setSourceText = useCallback((value: string) => {
-    if (typeof window !== 'undefined') {
+    const next = value ?? '';
+    if (sourceTextRef.current === next) return;
+    if (ALTRO_DEBUG_MODE && typeof window !== 'undefined') {
       console.log('[STATE AUDIT] Setting sourceText length:', value.length);
     }
-    setSourceTextState(value);
+    sourceTextRef.current = next;
+    setSourceTextState(next);
   }, []);
   const sourceTextRef = useRef('');
   const [nexusCommand, setNexusCommand] = useState('');
@@ -37,7 +41,7 @@ export function useNexus({ sourceLanguage, isScanning, isScanningRef, onRunScan,
 
   /** Сравните с логом при set: если длины расходятся — что-то перезаписывает state после setSourceText. */
   useEffect(() => {
-    if (typeof window === 'undefined' || process.env.NODE_ENV === 'production') return;
+    if (!ALTRO_DEBUG_MODE || typeof window === 'undefined' || process.env.NODE_ENV === 'production') return;
     console.log('[STATE AUDIT] sourceText in state after sync, length:', sourceText.length);
   }, [sourceText]);
 
@@ -113,7 +117,6 @@ export function useNexus({ sourceLanguage, isScanning, isScanningRef, onRunScan,
       const text = await processLocalFile(file);
       setNexusCommand(text);
       setSourceText(text);
-      sourceTextRef.current = text;
       
       // Simulate processing animation delay
       setTimeout(() => {
@@ -129,7 +132,6 @@ export function useNexus({ sourceLanguage, isScanning, isScanningRef, onRunScan,
 
   const clearSourceInput = useCallback(() => {
     setSourceText('');
-    sourceTextRef.current = '';
   }, [setSourceText]);
 
   return {

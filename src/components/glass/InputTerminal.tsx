@@ -204,8 +204,19 @@ export function InputTerminal({
             /* Полное значение поля; обрезки .slice / maxLength здесь нет */
             onSourceChange?.(e.target.value);
           }}
+          onPaste={(e) => {
+            if (readOnly) return;
+            const pasted = e.clipboardData?.getData('text') ?? '';
+            if (!pasted) return;
+            e.preventDefault();
+            const el = e.currentTarget;
+            const start = el.selectionStart ?? sourceText.length;
+            const end = el.selectionEnd ?? sourceText.length;
+            const next = `${sourceText.slice(0, start)}${pasted}${sourceText.slice(end)}`;
+            onSourceChange?.(next);
+          }}
           readOnly={readOnly}
-          disabled={readOnly}
+          disabled={false}
           className="absolute inset-0 w-full h-full p-2 rounded text-[11px] resize-none font-mono outline-none bg-transparent"
           style={{
             color: 'transparent',

@@ -1,12 +1,58 @@
 /* MIT License | Copyright (c) 2026 SERGEI NAZARIAN (SVN) | ALTRO Stencil */
 
 import { INITIAL_DOMAIN_WEIGHTS, type DomainWeights } from '@/lib/altroData';
+import { ALTRO_DEBUG_MODE } from '@/lib/constants';
 import { transliterateCyrillicToLatinPcgn } from './cyrillicTransliterate';
 import { isValidInlineFormulaBody } from './formulaMagnet';
 import { localizeUnit, NUMERIC_MAGNET_BODY_SOURCE, resolveUnitIdFromCapture } from './dictionaries/UnitRegistry';
 import { parseDecimalNumericString } from './parseDecimalNumeric';
 
 export { parseDecimalNumericString } from './parseDecimalNumeric';
+
+export interface MicroTranscreateContext {
+  linkedGenericNumberRaw?: string;
+}
+
+export interface MicroTranscreateSegment {
+  value: string;
+  type: string;
+  context?: MicroTranscreateContext;
+}
+
+export interface MicroTranscreateStats {
+  hits: number;
+  misses: number;
+  totalTime: number;
+  batchCount: number;
+}
+
+const MICRO_TRANSCREATE_SESSION_CACHE = new Map<string, string>();
+const MICRO_TRANSCREATE_CACHE_LIMIT = 4_096;
+const NAMED_ENTITY_BATCH_TYPES = new Set(['org_role', 'organization_name', 'person_full_name']);
+const MICRO_TRANSCREATE_STATS: MicroTranscreateStats = {
+  hits: 0,
+  misses: 0,
+  totalTime: 0,
+  batchCount: 0,
+};
+
+function nowMs(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
+
+export function resetMicroTranscreateSession(): void {
+  MICRO_TRANSCREATE_SESSION_CACHE.clear();
+  MICRO_TRANSCREATE_STATS.hits = 0;
+  MICRO_TRANSCREATE_STATS.misses = 0;
+  MICRO_TRANSCREATE_STATS.totalTime = 0;
+  MICRO_TRANSCREATE_STATS.batchCount = 0;
+}
+
+export function getMicroTranscreateStats(): MicroTranscreateStats {
+  return { ...MICRO_TRANSCREATE_STATS };
+}
 
 /** Все оси домена 0 — нет активной директивы (KSHERQ relaxation в SemanticFirewall). */
 export function domainWeightsAreNeutral(weights?: DomainWeights): boolean {
@@ -380,6 +426,77 @@ function localizePlainNumber(raw: string, locale: string): string {
   }
 }
 
+function hasCyrillicText(raw: string): boolean {
+  return /[А-Яа-яЁё]/u.test(raw);
+}
+
+function smallNumberToWordsEn(n: number): string {
+  const ones = [
+    'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+  ];
+  const teens = [
+    'ten', 'eleven', 'twelve', 'thirteen', 'fourteen',
+    'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen',
+  ];
+  const tens = [
+    '', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety',
+  ];
+  if (n < 10) return ones[n]!;
+  if (n < 20) return teens[n - 10]!;
+  if (n < 100) {
+    const t = Math.floor(n / 10);
+    const o = n % 10;
+    return o === 0 ? tens[t]! : `${tens[t]} ${ones[o]}`;
+  }
+  const h = Math.floor(n / 100);
+  const rem = n % 100;
+  return rem === 0 ? `${ones[h]} hundred` : `${ones[h]} hundred ${smallNumberToWordsEn(rem)}`;
+}
+
+function integerToWordsEn(n: number): string {
+  if (!Number.isFinite(n)) return '';
+  if (n === 0) return 'zero';
+  const sign = n < 0 ? 'minus ' : '';
+  let rest = Math.abs(Math.trunc(n));
+  const scales: Array<{ value: number; label: string }> = [
+    { value: 1_000_000_000_000, label: 'trillion' },
+    { value: 1_000_000_000, label: 'billion' },
+    { value: 1_000_000, label: 'million' },
+    { value: 1_000, label: 'thousand' },
+  ];
+  const parts: string[] = [];
+  for (const scale of scales) {
+    if (rest >= scale.value) {
+      const chunk = Math.floor(rest / scale.value);
+      parts.push(`${smallNumberToWordsEn(chunk)} ${scale.label}`);
+      rest %= scale.value;
+    }
+  }
+  if (rest > 0) {
+    parts.push(smallNumberToWordsEn(rest));
+  }
+  return sign + parts.join(' ');
+}
+
+function localizeFormulaParen(
+  raw: string,
+  targetLanguage: string,
+  context?: MicroTranscreateContext
+): string {
+  const trimmed = raw.trim();
+  if (!/^\([\s\S]*\)$/.test(trimmed)) return localizeFormula(raw);
+  const lang = targetLanguage.trim().toLowerCase();
+  if (!(lang === 'en' || lang.startsWith('en-'))) return localizeFormula(raw);
+  if (!hasCyrillicText(trimmed)) return localizeFormula(raw);
+  const linked = context?.linkedGenericNumberRaw?.trim();
+  if (!linked) return localizeFormula(raw);
+  const numeric = parseDecimalNumericString(linked);
+  if (!Number.isFinite(numeric)) return localizeFormula(raw);
+  const words = integerToWordsEn(numeric);
+  if (!words) return localizeFormula(raw);
+  return `(${words})`;
+}
+
 /**
  * When Masker type is missing (e.g. legacy vault) or `unknown`, infer date/money/percent
  * so Double OPR still localizes bricks instead of echoing English.
@@ -451,6 +568,7 @@ function resolveEffectiveType(
   | 'registry_number'
   | 'date_monolith'
   | 'person_full_name'
+  | 'org_role'
   | 'inn'
   | 'kpp_code'
   | 'organization_name'
@@ -477,6 +595,7 @@ function resolveEffectiveType(
     declared === 'registry_number' ||
     declared === 'date_monolith' ||
     declared === 'person_full_name' ||
+    declared === 'org_role' ||
     declared === 'inn' ||
     declared === 'kpp_code' ||
     declared === 'organization_name' ||
@@ -495,15 +614,64 @@ export function microTranscreate(
   value: string,
   type: string,
   targetLanguage: string,
-  weights?: DomainWeights
+  weights?: DomainWeights,
+  context?: MicroTranscreateContext
 ): string {
-  console.log('🔍 [DEBUG] Checking monolith content:', value);
+  const cacheKey = buildMicroTranscreateCacheKey(value, type, targetLanguage, context);
+  const fromCache = MICRO_TRANSCREATE_SESSION_CACHE.get(cacheKey);
+  if (fromCache !== undefined) {
+    MICRO_TRANSCREATE_STATS.hits += 1;
+    return fromCache;
+  }
+  MICRO_TRANSCREATE_STATS.misses += 1;
+  const startedAt = nowMs();
+  const computed = microTranscreateNoCache(value, type, targetLanguage, weights, context);
+  MICRO_TRANSCREATE_STATS.totalTime += nowMs() - startedAt;
+  rememberMicroTranscreateCache(cacheKey, computed);
+  return computed;
+}
+
+function buildMicroTranscreateCacheKey(
+  value: string,
+  type: string,
+  targetLanguage: string,
+  context?: MicroTranscreateContext
+): string {
+  const normalizedValue = value.trim();
+  const normalizedType = type.trim().toLowerCase() || 'unknown';
+  const normalizedTarget = targetLanguage.trim().toLowerCase() || 'ru';
+  /**
+   * formula_paren зависит от связанного числа — добавляем контекст, чтобы не смешивать разные «прописи».
+   */
+  const linked = context?.linkedGenericNumberRaw?.trim() ?? '';
+  return `${normalizedType}|||${normalizedTarget}|||${normalizedValue}|||${linked}`;
+}
+
+function rememberMicroTranscreateCache(key: string, value: string): void {
+  if (MICRO_TRANSCREATE_SESSION_CACHE.size >= MICRO_TRANSCREATE_CACHE_LIMIT) {
+    const oldest = MICRO_TRANSCREATE_SESSION_CACHE.keys().next().value as string | undefined;
+    if (oldest !== undefined) {
+      MICRO_TRANSCREATE_SESSION_CACHE.delete(oldest);
+    }
+  }
+  MICRO_TRANSCREATE_SESSION_CACHE.set(key, value);
+}
+
+function microTranscreateNoCache(
+  value: string,
+  type: string,
+  targetLanguage: string,
+  weights?: DomainWeights,
+  context?: MicroTranscreateContext
+): string {
   const locale = resolveLocaleTag(targetLanguage);
   const v = value.trim();
   if (!v) return v;
 
   const effectiveType = resolveEffectiveType(type, v);
-  console.log('[ALTRO_MIRROR] microTranscreate input:', JSON.stringify({ value: v, type, effectiveType, targetLanguage }));
+  if (ALTRO_DEBUG_MODE) {
+    console.log('[ALTRO][microTranscreate] input', { value: v, type, effectiveType, targetLanguage });
+  }
 
   switch (effectiveType) {
     case 'date': {
@@ -531,9 +699,10 @@ export function microTranscreate(
     case 'formula':
     case 'formula_display':
     case 'formula_bracket':
-    case 'formula_paren':
     case 'formula_inline':
       return sanitizeForTagDisplay(localizeFormula(v));
+    case 'formula_paren':
+      return sanitizeForTagDisplay(localizeFormulaParen(v, targetLanguage, context));
     case 'kpi_metric':
       return sanitizeForTagDisplay(localizeKpiMetric(v, locale));
     case 'id_tag':
@@ -550,10 +719,18 @@ export function microTranscreate(
       const lang = targetLanguage.trim().toLowerCase();
       if (lang === 'en' || lang.startsWith('en-')) {
         const mirrored = transliterateCyrillicToLatinPcgn(v);
-        console.log('[ALTRO_MIRROR] person_full_name transliteration:', JSON.stringify(v), '→', JSON.stringify(mirrored));
+        if (ALTRO_DEBUG_MODE) {
+          console.log('[ALTRO][microTranscreate] person_full_name', { source: v, mirrored });
+        }
         return sanitizeForTagDisplay(mirrored);
       }
       return sanitizeForTagDisplay(v);
+    }
+    case 'org_role': {
+      const normalized = v.trim();
+      if (/^заказчик$/iu.test(normalized)) return 'Customer';
+      if (/^поставщик$/iu.test(normalized)) return 'Supplier';
+      return sanitizeForTagDisplay(normalized);
     }
     case 'organization_name': {
       const lang = targetLanguage.trim().toLowerCase();
@@ -561,13 +738,12 @@ export function microTranscreate(
         const trimmed = v.trim();
         /** Граница через `(?=\p{Pd}+|:)` вместо `\b`: после кириллицы `\b` в JS ненадёжен (ASCII `\w`). */
         const isRoleLine = /(Заказчик|Поставщик|закасчик|поставщик)\s*(?=\p{Pd}+|:)/iu.test(trimmed);
-        if (isRoleLine) {
-          console.log('✅ [ALTRO CORE] Роль обнаружена:', trimmed);
-        }
         const mirrored = isRoleLine
           ? mirrorOrganizationRoleAndNameEn(trimmed)
           : transliterateCyrillicToLatinPcgn(trimmed);
-        console.log('[ALTRO_MIRROR] organization_name:', JSON.stringify(v), '→', JSON.stringify(mirrored));
+        if (ALTRO_DEBUG_MODE) {
+          console.log('[ALTRO][microTranscreate] organization_name', { source: v, mirrored, isRoleLine });
+        }
         return sanitizeForTagDisplay(mirrored);
       }
       return sanitizeForTagDisplay(v);
@@ -581,7 +757,9 @@ export function microTranscreate(
         const hasRoleKeyword = /(Заказчик|Поставщик|заказчик|поставщик)/u.test(v);
         if (hasRoleKeyword) {
           const mirroredMonolith = mirrorRoleFragmentInsideMonolithEn(v);
-          console.log('[ALTRO_MIRROR] org_tax_monolith role fragment:', JSON.stringify(v), '→', JSON.stringify(mirroredMonolith));
+          if (ALTRO_DEBUG_MODE) {
+            console.log('[ALTRO][microTranscreate] org_tax_monolith', { source: v, mirroredMonolith });
+          }
           return sanitizeForTagDisplay(mirroredMonolith);
         }
       }
@@ -595,4 +773,94 @@ export function microTranscreate(
     default:
       return sanitizeForTagDisplay(localizePlainNumber(v, locale));
   }
+}
+
+/**
+ * Batch entry-point: ускоряет поток за счёт:
+ * 1) dedupe через session cache;
+ * 2) групповой обработки named-entity сегментов (org/person roles/names).
+ */
+export function microTranscreateBatch(
+  segments: MicroTranscreateSegment[],
+  targetLanguage: string,
+  weights?: DomainWeights
+): string[] {
+  if (segments.length === 0) return [];
+  const out = new Array<string>(segments.length);
+  const namedEntityWork: Array<{ index: number; key: string; segment: MicroTranscreateSegment }> = [];
+  const directWork: Array<{ index: number; key: string; segment: MicroTranscreateSegment }> = [];
+
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i]!;
+    const key = buildMicroTranscreateCacheKey(segment.value, segment.type, targetLanguage, segment.context);
+    const fromCache = MICRO_TRANSCREATE_SESSION_CACHE.get(key);
+    if (fromCache !== undefined) {
+      MICRO_TRANSCREATE_STATS.hits += 1;
+      out[i] = fromCache;
+      continue;
+    }
+    if (NAMED_ENTITY_BATCH_TYPES.has(segment.type)) {
+      namedEntityWork.push({ index: i, key, segment });
+    } else {
+      directWork.push({ index: i, key, segment });
+    }
+  }
+
+  for (const item of directWork) {
+    MICRO_TRANSCREATE_STATS.misses += 1;
+    const startedAt = nowMs();
+    const computed = microTranscreateNoCache(
+      item.segment.value,
+      item.segment.type,
+      targetLanguage,
+      weights,
+      item.segment.context
+    );
+    MICRO_TRANSCREATE_STATS.totalTime += nowMs() - startedAt;
+    out[item.index] = computed;
+    rememberMicroTranscreateCache(item.key, computed);
+  }
+
+  if (namedEntityWork.length > 0) {
+    MICRO_TRANSCREATE_STATS.batchCount += 1;
+    MICRO_TRANSCREATE_STATS.misses += namedEntityWork.length;
+    const startedAt = nowMs();
+    const computedBatch = runNamedEntityBatch(namedEntityWork.map((x) => x.segment), targetLanguage, weights);
+    MICRO_TRANSCREATE_STATS.totalTime += nowMs() - startedAt;
+    for (let i = 0; i < namedEntityWork.length; i++) {
+      const item = namedEntityWork[i]!;
+      const computed = computedBatch[i] ?? microTranscreateNoCache(
+        item.segment.value,
+        item.segment.type,
+        targetLanguage,
+        weights,
+        item.segment.context
+      );
+      out[item.index] = computed;
+      rememberMicroTranscreateCache(item.key, computed);
+    }
+  }
+
+  return out;
+}
+
+function runNamedEntityBatch(
+  segments: MicroTranscreateSegment[],
+  targetLanguage: string,
+  weights?: DomainWeights
+): string[] {
+  if (ALTRO_DEBUG_MODE) {
+    console.log('[ALTRO][microTranscreateBatch] named-entity batch', {
+      segmentCount: segments.length,
+      targetLanguage,
+      segmentTypes: segments.map((s) => s.type),
+    });
+  }
+  /**
+   * В текущем ядре это локальный трансмутатор.
+   * Точка централизована под будущий single-request LLM transport.
+   */
+  return segments.map((segment) =>
+    microTranscreateNoCache(segment.value, segment.type, targetLanguage, weights, segment.context)
+  );
 }

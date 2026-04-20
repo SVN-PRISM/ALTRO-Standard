@@ -7,6 +7,7 @@ import { resolveWeightsFromIntent } from '@core/IntentOrchestrator';
 import { scanEntities, type EntityMatch } from '@core/EntityScanner';
 import { buildStencilFromEntities } from '@core/StencilDisplayHelper';
 import type { DomainWeights } from '@/lib/altroData';
+import { ALTRO_DEBUG_MODE } from '@/lib/constants';
 
 // ——— Legislative Core (5) — строго по финальной матрице ———
 
@@ -378,9 +379,11 @@ export function useAltroCore(liveSourceRaw: string = '') {
   }, []);
 
   useEffect(() => {
-    console.log(
-      '[ALTRO-CORE]: Матрица 5+8 развернута. Смысловые поля ЭКОНОМИКА...ДУХОВНОСТЬ активны.'
-    );
+    if (ALTRO_DEBUG_MODE) {
+      console.log(
+        '[ALTRO-CORE]: Матрица 5+8 развернута. Смысловые поля ЭКОНОМИКА...ДУХОВНОСТЬ активны.'
+      );
+    }
   }, []);
 
   /** I — Information: захват сырых данных */

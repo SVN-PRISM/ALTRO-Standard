@@ -310,7 +310,6 @@ export function useAltroPage() {
   const handleSourceChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     /** Полный текст из textarea; нет validate/sanitize/format/slice до setSourceText (см. [STATE AUDIT] в useNexus). */
     const cleanText = e.target.value;
-    sourceTextRef.current = cleanText;
     setSourceText(cleanText);
     setIsAnalyzed(false);
     setIsCommitted(false);

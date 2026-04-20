@@ -1,6 +1,7 @@
 /* MIT License | Copyright (c) 2026 SERGEI NAZARIAN (SVN) | ALTRO Stencil */
 
 import type { DomainWeights } from '@/lib/altroData';
+import { ALTRO_DEBUG_MODE } from '@/lib/constants';
 import type { DataVault } from './DataVault';
 import {
   getMaskerUnitPatternSpecs,
@@ -19,11 +20,20 @@ import {
   spanOverlaps,
   textPrefixHex,
 } from './formulaMagnet';
-import { microTranscreate } from './microTranscreate';
+import {
+  getMicroTranscreateStats,
+  microTranscreate,
+  microTranscreateBatch,
+  type MicroTranscreateContext,
+  type MicroTranscreateSegment,
+  resetMicroTranscreateSession,
+} from './microTranscreate';
 import {
   DATE_MONOLITH_SOURCE,
+  isPersonFullNameCandidate,
   KPP_RU_STANDALONE_SOURCE,
   ORG_INN_KPP_MONOLITH_SOURCE,
+  ORGANIZATION_ROLE_SOURCE,
   ORGANIZATION_ROLE_QUOTED_SOURCE,
   PERSON_FULL_NAME_GREEDY_SOURCE,
   REGISTRY_NUMBER_GREEDY_SOURCE,
@@ -117,6 +127,12 @@ export const MASKER_SECONDARY_REST_SPECS: ReadonlyArray<MaskerSecondarySpec> = [
     flags: 'gu',
     type: 'kpp_code',
     patternName: 'kpp_ru',
+  },
+  {
+    source: ORGANIZATION_ROLE_SOURCE,
+    flags: 'gu',
+    type: 'org_role',
+    patternName: 'organization_role',
   },
   {
     source: ORGANIZATION_ROLE_QUOTED_SOURCE,
@@ -221,8 +237,8 @@ const PATTERN_SPECS_FOR_LOG = [
 
 /** Лимит итераций в `while (regex.exec)` — защита от бесконечного цикла при пустых совпадениях / багах RegExp. */
 const MAX_REGEX_EXEC_ITER = 100;
-const DEBUG_MASKER = process.env.ALTRO_DEBUG_MASKER === '1';
 const ORG_ROLE_KEYWORD_RE = /\b(Заказчик|Поставщик|заказчик|поставщик)\b/u;
+const FORCED_ORG_ROLE_RE = new RegExp(ORGANIZATION_ROLE_SOURCE, 'gu');
 
 interface RawSpan {
   start: number;
@@ -232,6 +248,15 @@ interface RawSpan {
   /** Имя правила для MASKER ATTEMPT (secondary: unit_0, money_sym, …). */
   patternName?: string;
 }
+
+interface OriginalSegment {
+  text: string;
+  type: string;
+  start: number;
+  end: number;
+}
+
+const FAST_PATH_TYPES = new Set(['generic_number', 'date_monolith']);
 
 function patternMatchesSomewhere(patternSource: string, flags: string, text: string): boolean {
   try {
@@ -300,11 +325,11 @@ export class Masker {
       let execIter = 0;
       while ((m = re.exec(originalText)) !== null) {
         if (++execIter > MAX_REGEX_EXEC_ITER) {
-          console.error(
-            '[Masker] Safety: registry regex exec exceeded',
-            MAX_REGEX_EXEC_ITER,
-            'iterations'
-          );
+          if (ALTRO_DEBUG_MODE) {
+            console.log('[ALTRO][Masker] registry regex exec exceeded safety limit', {
+              maxIterations: MAX_REGEX_EXEC_ITER,
+            });
+          }
           break;
         }
         const full = m[0];
@@ -342,12 +367,12 @@ export class Masker {
 
         while ((m = re.exec(text)) !== null) {
           if (++execIter > MAX_REGEX_EXEC_ITER) {
-            console.error(
-              '[Masker] Safety: regex exec exceeded',
-              MAX_REGEX_EXEC_ITER,
-              'iterations for pattern',
-              spec.patternName
-            );
+            if (ALTRO_DEBUG_MODE) {
+              console.log('[ALTRO][Masker] regex exec exceeded safety limit', {
+                maxIterations: MAX_REGEX_EXEC_ITER,
+                patternName: spec.patternName,
+              });
+            }
             break;
           }
           const full = m[0];
@@ -356,9 +381,12 @@ export class Masker {
             continue;
           }
           if (spec.type === 'org_tax_monolith' && ORG_ROLE_KEYWORD_RE.test(full)) {
-            if (DEBUG_MASKER) {
+            if (ALTRO_DEBUG_MODE) {
               console.log('[MASKER] Skip org_tax_monolith with role keyword:', full);
             }
+            continue;
+          }
+          if (spec.type === 'person_full_name' && !isPersonFullNameCandidate(full)) {
             continue;
           }
           spans.push({
@@ -394,6 +422,37 @@ export class Masker {
     return mergeSpansRaw(spans as Parameters<typeof mergeSpansRaw>[0]) as RawSpan[];
   }
 
+  /** Жёсткий приоритет ролей: роли всегда маскируются первыми как `org_role`. */
+  private collectForcedOrgRoleSpans(originalText: string): RawSpan[] {
+    const spans: RawSpan[] = [];
+    let m: RegExpExecArray | null;
+    let execIter = 0;
+    FORCED_ORG_ROLE_RE.lastIndex = 0;
+    while ((m = FORCED_ORG_ROLE_RE.exec(originalText)) !== null) {
+      if (++execIter > MAX_REGEX_EXEC_ITER) {
+        if (ALTRO_DEBUG_MODE) {
+          console.log('[ALTRO][Masker] forced org_role regex exec exceeded safety limit', {
+            maxIterations: MAX_REGEX_EXEC_ITER,
+          });
+        }
+        break;
+      }
+      const full = m[0];
+      if (full.length === 0) {
+        if (FORCED_ORG_ROLE_RE.lastIndex === m.index) FORCED_ORG_ROLE_RE.lastIndex++;
+        continue;
+      }
+      spans.push({
+        start: m.index,
+        end: m.index + full.length,
+        text: originalText.slice(m.index, m.index + full.length),
+        type: 'org_role',
+        patternName: 'organization_role_forced',
+      });
+    }
+    return spans;
+  }
+
   /**
    * Обрабатывает текст: совпадения собираются, сливаются по длине,
    * затем одним проходом подставляются временные блоки __ALTRO_IPA_BLOCK_*__ и финальные {{IPA_N}}.
@@ -401,29 +460,38 @@ export class Masker {
    * @param weights — контекст доменов (IntentOrchestrator) для microTranscreate / будущих правил маскирования.
    */
   mask(text: string, targetLanguage: string, weights?: DomainWeights): string {
-    if (DEBUG_MASKER) {
-      console.log('[MASKER] ATTEMPT: mask() begin — source length', text.length);
-      console.log('ORIGINAL_TEXT_HEX:', textPrefixHex(text, 100), '| length=', text.length);
-      console.log(
-        'MATCH_ATTEMPT:',
-        'formula_display',
-        patternMatchesSomewhere(FORMULA_LATEX_DISPLAY, 'g', text)
-      );
-      console.log('MATCH_ATTEMPT:', 'formula_bracket', patternMatchesSomewhere(FORMULA_BRACKET, 'g', text));
-      console.log('MATCH_ATTEMPT:', 'formula_paren', patternMatchesSomewhere(FORMULA_PAREN, 'g', text));
-      console.log('MATCH_ATTEMPT:', 'formula_inline', patternMatchesSomewhere(FORMULA_LATEX_INLINE, 'g', text));
+    resetMicroTranscreateSession();
+    const maskStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+    const forcedOrgRoleRaw = this.collectForcedOrgRoleSpans(text);
+    const forcedOrgRoleMerged = this.mergeSpans(forcedOrgRoleRaw);
+
+    if (ALTRO_DEBUG_MODE) {
+      console.log('[ALTRO][Masker] mask begin', {
+        sourceLength: text.length,
+        sourcePrefixHex: textPrefixHex(text, 100),
+        matchAttempt: {
+          formula_display: patternMatchesSomewhere(FORMULA_LATEX_DISPLAY, 'g', text),
+          formula_bracket: patternMatchesSomewhere(FORMULA_BRACKET, 'g', text),
+          formula_paren: patternMatchesSomewhere(FORMULA_PAREN, 'g', text),
+          formula_inline: patternMatchesSomewhere(FORMULA_LATEX_INLINE, 'g', text),
+        },
+      });
     }
 
     const formulaRaw = this.collectFormulaMagnetSpans(text);
-    const formulaMerged = this.mergeSpans(formulaRaw);
-    if (DEBUG_MASKER) {
+    const formulaMerged = this.mergeSpans(formulaRaw).filter(
+      (s) => !forcedOrgRoleMerged.some((r) => spanOverlaps(s, r))
+    );
+    if (ALTRO_DEBUG_MODE) {
       for (const s of formulaRaw) {
         console.log(`MASKER ATTEMPT: [${s.patternName ?? s.type}] matched length=${s.text.length}`);
       }
     }
 
     const registryFromRaw = this.collectRegistrySpansOnly(text).filter(
-      (s) => !formulaMerged.some((f) => spanOverlaps(s, f))
+      (s) => !formulaMerged.some((f) => spanOverlaps(s, f)) && !forcedOrgRoleMerged.some((r) => spanOverlaps(s, r))
     );
 
     const blankedForSecondary = blankRangesInText(
@@ -431,31 +499,33 @@ export class Masker {
       formulaMerged.map((s) => ({ start: s.start, end: s.end }))
     );
     const secondaryRaw = this.collectSecondarySpans(blankedForSecondary, text, registryFromRaw);
-    if (DEBUG_MASKER) {
+    if (ALTRO_DEBUG_MODE) {
       for (const s of secondaryRaw) {
         console.log(`MASKER ATTEMPT: [${s.patternName ?? s.type}] matched length=${s.text.length}`);
       }
     }
 
     const secondaryFiltered = secondaryRaw.filter(
-      (s) => !formulaMerged.some((f) => spanOverlaps(s, f))
+      (s) =>
+        !formulaMerged.some((f) => spanOverlaps(s, f))
+        && !forcedOrgRoleMerged.some((r) => spanOverlaps(s, r))
     );
 
     const semanticRaw = this.collectSemanticMaskSpans(text);
     const semanticFiltered = semanticRaw.filter(
-      (s) => !formulaMerged.some((f) => spanOverlaps(s, f))
+      (s) =>
+        !formulaMerged.some((f) => spanOverlaps(s, f))
+        && !forcedOrgRoleMerged.some((r) => spanOverlaps(s, r))
     );
 
-    const raw = [...formulaRaw, ...secondaryRaw, ...semanticRaw];
-    const merged = this.mergeSpans([...formulaMerged, ...secondaryFiltered, ...semanticFiltered]);
+    const raw = [...forcedOrgRoleRaw, ...formulaRaw, ...secondaryRaw, ...semanticRaw];
+    const merged = this.mergeSpans([...forcedOrgRoleMerged, ...formulaMerged, ...secondaryFiltered, ...semanticFiltered]);
 
-    if (DEBUG_MASKER) {
-      console.log('[ALTRO][Masker] Спецификации RegExp (шаблоны Masker):', PATTERN_SPECS_FOR_LOG);
-      console.log('[ALTRO][Masker] Совпадения по всем паттернам (до merge):', raw.length);
-      console.log('[ALTRO][Masker] Итоговые захваты после merge (что ушло в трафарет):', merged.length);
+    if (ALTRO_DEBUG_MODE) {
+      console.log('[ALTRO][Masker] regex specs', PATTERN_SPECS_FOR_LOG);
     }
 
-    const originals: Array<{ text: string; type: string }> = [];
+    const originals: OriginalSegment[] = [];
     let out = '';
     let pos = 0;
 
@@ -463,21 +533,62 @@ export class Masker {
       out += text.slice(pos, s.start);
       const idx = originals.length;
       const token = `__ALTRO_IPA_BLOCK_${String(idx).padStart(6, '0')}__`;
-      originals.push({ text: s.text.trim(), type: s.type });
+      originals.push({ text: s.text.trim(), type: s.type, start: s.start, end: s.end });
       out += token;
       pos = s.end;
     }
     out += text.slice(pos);
+
+    const contexts: Array<MicroTranscreateContext | undefined> = new Array(originals.length);
+    let linkedGenericNumberRaw: string | undefined;
+    let linkedGenericNumberEnd = -1;
+    for (let i = 0; i < originals.length; i++) {
+      const current = originals[i]!;
+      if (current.type === 'formula_paren' && linkedGenericNumberRaw && linkedGenericNumberEnd >= 0) {
+        const bridge = text.slice(linkedGenericNumberEnd, current.start);
+        const hasOnlyBridgeChars = /^[\s\u00A0,.;:–—-]*$/u.test(bridge);
+        if (hasOnlyBridgeChars) {
+          contexts[i] = { linkedGenericNumberRaw };
+        }
+      }
+      if (current.type === 'generic_number') {
+        linkedGenericNumberRaw = current.text;
+        linkedGenericNumberEnd = current.end;
+      } else if (current.type !== 'formula_paren') {
+        linkedGenericNumberRaw = undefined;
+        linkedGenericNumberEnd = -1;
+      }
+    }
+
+    const batchedCandidates: MicroTranscreateSegment[] = [];
+    const batchedIndexMap: number[] = [];
+    for (let i = 0; i < originals.length; i++) {
+      const seg = originals[i]!;
+      if (seg.type.startsWith('semantic_mask_')) continue;
+      if (FAST_PATH_TYPES.has(seg.type)) continue;
+      batchedCandidates.push({
+        value: seg.text,
+        type: seg.type,
+        context: contexts[i],
+      });
+      batchedIndexMap.push(i);
+    }
+    const batchedDisplays = microTranscreateBatch(batchedCandidates, targetLanguage, weights);
+    const batchedDisplayByIndex = new Map<number, string>();
+    for (let i = 0; i < batchedIndexMap.length; i++) {
+      batchedDisplayByIndex.set(batchedIndexMap[i]!, batchedDisplays[i]!);
+    }
 
     let finalOut = out;
     for (let i = 0; i < originals.length; i++) {
       const token = `__ALTRO_IPA_BLOCK_${String(i).padStart(6, '0')}__`;
       const source = originals[i].text;
       const detectedType = originals[i].type;
+      const context = contexts[i];
       if (detectedType === 'unit') {
         const uid = resolveUnitIdFromCapture(source);
         const dis = resolveUnitMagnetDisambiguation(source, uid);
-        if (DEBUG_MASKER) {
+        if (ALTRO_DEBUG_MODE) {
           console.log(
             `[ALTRO][Stage:Unit-Magnet] Captured Unit length=${source.length} -> ID: ${uid ?? 'unknown'}${dis ? ` — ${dis}` : ''}`
           );
@@ -485,8 +596,11 @@ export class Masker {
       }
       const display = detectedType.startsWith('semantic_mask_')
         ? source
-        : microTranscreate(source, detectedType, targetLanguage, weights);
-      if (process.env.ALTRO_AUDIT_STENCIL === '1') {
+        : FAST_PATH_TYPES.has(detectedType)
+          ? microTranscreate(source, detectedType, targetLanguage, weights, context)
+          : (batchedDisplayByIndex.get(i)
+            ?? microTranscreate(source, detectedType, targetLanguage, weights, context));
+      if (ALTRO_DEBUG_MODE) {
         console.log('[ALTRO_AUDIT][Masker] microTranscreate', {
           index: i,
           originalSegment: source,
@@ -500,6 +614,30 @@ export class Masker {
       const key = this.vault.push(display, detectedType, source);
       if (!finalOut.includes(token)) continue;
       finalOut = finalOut.split(token).join(key);
+    }
+
+    if (ALTRO_DEBUG_MODE) {
+      const stats = getMicroTranscreateStats();
+      const elapsedMs = (
+        (typeof performance !== 'undefined' && typeof performance.now === 'function'
+          ? performance.now()
+          : Date.now()) - maskStartedAt
+      );
+      const totalRequests = stats.hits + stats.misses;
+      const hitRate = totalRequests > 0 ? (stats.hits / totalRequests) * 100 : 0;
+      console.table([{
+        processingTimeMs: Number(elapsedMs.toFixed(2)),
+        cacheHitRatePercent: Number(hitRate.toFixed(2)),
+        batchPackages: stats.batchCount,
+      }]);
+      console.log('[ALTRO_TRANSFIGURE_COMPLETE]', {
+        sourceLength: text.length,
+        rawMatches: raw.length,
+        mergedMatches: merged.length,
+        maskedBlocks: originals.length,
+        outputLength: finalOut.length,
+        microTranscreateStats: stats,
+      });
     }
 
     return finalOut;

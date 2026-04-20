@@ -19,6 +19,7 @@ import { hasStressMark } from '@/lib/altro/textUtils';
 import { DomainEngine } from '@/archive/legacy_altro/DomainEngine';
 import { runScanLogic } from '@/lib/altroLogic';
 import { ALTRO_PRODUCT_STENCIL_ONLY } from '@/config/product';
+import { ALTRO_DEBUG_MODE } from '@/lib/constants';
 
 export type PresetId = 'mirror' | 'transfigure' | 'slang' | null;
 
@@ -161,8 +162,8 @@ export function useAltroScanner(params: UseAltroScannerParams) {
   const runScan = useCallback(
     async (seamless = false, transcreateOnly = false, textOverride?: string) => {
       if (ALTRO_PRODUCT_STENCIL_ONLY) {
-        if (typeof window !== 'undefined') {
-          console.warn(
+        if (ALTRO_DEBUG_MODE && typeof window !== 'undefined') {
+          console.log(
             '[ALTRO STENCIL] Путь LIBRA (runScan / AltroOrchestrator) отключён. Запускайте обработку через «ТРАНСФИГУРАЦИЯ» (API /api/transcreate).'
           );
         }
@@ -175,7 +176,9 @@ export function useAltroScanner(params: UseAltroScannerParams) {
       const llmTargetLang = outputLanguage === 'auto' ? 'ru' : outputLanguage;
 
       const mode = activePreset || 'mirror';
-      if (typeof window !== 'undefined') console.log('CURRENT_MODE:', mode, '| activePreset:', activePreset, '| transcreateOnly:', transcreateOnly);
+      if (ALTRO_DEBUG_MODE && typeof window !== 'undefined') {
+        console.log('CURRENT_MODE:', mode, '| activePreset:', activePreset, '| transcreateOnly:', transcreateOnly);
+      }
       const textForTranscreation = (textOverride ?? calibratedText ?? displayedAdaptation ?? adaptationText ?? ALTRO_GOLDEN_STATE ?? '').trim() || inputText?.trim() || '';
       const needsLLM = (activePreset === 'transfigure' || transcreateOnly) && oprPrismValue !== 100 && textForTranscreation.length > 0;
       const mirrorRepeatScan = isAnalyzed && mode === 'mirror';
@@ -206,13 +209,11 @@ export function useAltroScanner(params: UseAltroScannerParams) {
             const tokensForCheck = displayTokens.length > 0 && displayTokens.map((t) => t.word).join('') === text ? displayTokens : AltroTokenManager.tokenize(text);
             if (hasUnresolvedHomonymsInTokens(tokensForCheck, mergedAudit, resolvedVariants)) {
               setIsScanningLocal(false);
-              setIsScanningLocal(false);
               scanInProgressRef.current = false;
               return;
             }
           } catch (err) {
-            if (typeof window !== 'undefined') console.error('ALTRO homonym check error:', err);
-            setIsScanningLocal(false);
+            if (ALTRO_DEBUG_MODE && typeof window !== 'undefined') console.log('ALTRO homonym check error:', err);
             setIsScanningLocal(false);
             scanInProgressRef.current = false;
             return;
@@ -253,7 +254,9 @@ export function useAltroScanner(params: UseAltroScannerParams) {
                     })
                     .join('; ')
                 : undefined;
-            if (typeof window !== 'undefined') console.log(`Target Language set to: ${llmTargetLang.toUpperCase()} | OPR Intensity: ${opr}`);
+            if (ALTRO_DEBUG_MODE && typeof window !== 'undefined') {
+              console.log(`Target Language set to: ${llmTargetLang.toUpperCase()} | OPR Intensity: ${opr}`);
+            }
             const llmResult = await altroOrchestrator.request({
               text,
               tokens,
@@ -286,7 +289,7 @@ export function useAltroScanner(params: UseAltroScannerParams) {
             setDisplayTokens(AltroTokenManager.tokenize(llmResult));
             setLastGuardReport(altroOrchestrator.getLastGuardReport());
           } catch (err) {
-            if (typeof window !== 'undefined') console.error('ALTRO LLM ERROR:', err);
+            if (ALTRO_DEBUG_MODE && typeof window !== 'undefined') console.log('ALTRO LLM ERROR:', err);
             const is403 = err instanceof Error && err.message.includes('Security Policy Violation');
             if (is403) {
               setSecurityBlocked(true);
@@ -307,7 +310,6 @@ export function useAltroScanner(params: UseAltroScannerParams) {
             }
           } finally {
             llmRequestInFlightRef.current = false;
-            setIsScanningLocal(false);
             setIsScanningLocal(false);
             scanInProgressRef.current = false;
           }
@@ -354,7 +356,9 @@ export function useAltroScanner(params: UseAltroScannerParams) {
                   })
                   .join('; ')
               : undefined;
-          if (typeof window !== 'undefined') console.log(`Target Language set to: ${llmTargetLang.toUpperCase()} | OPR Intensity: ${opr}`);
+          if (ALTRO_DEBUG_MODE && typeof window !== 'undefined') {
+            console.log(`Target Language set to: ${llmTargetLang.toUpperCase()} | OPR Intensity: ${opr}`);
+          }
           const llmResult = await altroOrchestrator.request({
             text: textForTranscreation,
             tokens: tokensMatch ? displayTokens : undefined,
@@ -386,7 +390,7 @@ export function useAltroScanner(params: UseAltroScannerParams) {
           if (llmResult?.trim()) setALTRO_GOLDEN_STATE(llmResult);
           setLastGuardReport(altroOrchestrator.getLastGuardReport());
         } catch (err) {
-          if (typeof window !== 'undefined') console.error('ALTRO LLM ERROR:', err);
+          if (ALTRO_DEBUG_MODE && typeof window !== 'undefined') console.log('ALTRO LLM ERROR:', err);
           const is403 = err instanceof Error && err.message.includes('Security Policy Violation');
           if (is403) {
             setSecurityBlocked(true);
