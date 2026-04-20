@@ -70,6 +70,14 @@ function mirrorOrganizationRoleAndNameEn(v: string): string {
   return `${roleEn} \u2014 ${tail}`.replace(/\s+/g, ' ').trim();
 }
 
+function mirrorRoleFragmentInsideMonolithEn(v: string): string {
+  const roleFragmentRe = /((?:Заказчик|Поставщик|заказчик|поставщик)\s*(?:\p{Pd}+|:)\s*[^\n;|]+)/u;
+  const m = roleFragmentRe.exec(v);
+  if (!m) return v;
+  const mirrored = mirrorOrganizationRoleAndNameEn(m[1]);
+  return v.slice(0, m.index) + mirrored + v.slice(m.index + m[1].length);
+}
+
 function translateRuLegalEntityPrefix(s: string): string {
   const pairs: Array<[RegExp, string]> = [
     [/^(АО)\s+/iu, 'JSC '],
@@ -489,11 +497,13 @@ export function microTranscreate(
   targetLanguage: string,
   weights?: DomainWeights
 ): string {
+  console.log('🔍 [DEBUG] Checking monolith content:', value);
   const locale = resolveLocaleTag(targetLanguage);
   const v = value.trim();
   if (!v) return v;
 
   const effectiveType = resolveEffectiveType(type, v);
+  console.log('[ALTRO_MIRROR] microTranscreate input:', JSON.stringify({ value: v, type, effectiveType, targetLanguage }));
 
   switch (effectiveType) {
     case 'date': {
@@ -549,8 +559,11 @@ export function microTranscreate(
       const lang = targetLanguage.trim().toLowerCase();
       if (lang === 'en' || lang.startsWith('en-')) {
         const trimmed = v.trim();
-        /** Не использовать `\b` после кириллицы: в JS `\w` ASCII-only → `\b` после «Заказчик» не срабатывает. */
-        const isRoleLine = /^(Заказчик|Поставщик|заказчик|поставщик)\s*(?=\p{Pd}+|:)/iu.test(trimmed);
+        /** Граница через `(?=\p{Pd}+|:)` вместо `\b`: после кириллицы `\b` в JS ненадёжен (ASCII `\w`). */
+        const isRoleLine = /(Заказчик|Поставщик|закасчик|поставщик)\s*(?=\p{Pd}+|:)/iu.test(trimmed);
+        if (isRoleLine) {
+          console.log('✅ [ALTRO CORE] Роль обнаружена:', trimmed);
+        }
         const mirrored = isRoleLine
           ? mirrorOrganizationRoleAndNameEn(trimmed)
           : transliterateCyrillicToLatinPcgn(trimmed);
@@ -561,8 +574,19 @@ export function microTranscreate(
     }
     case 'inn':
     case 'kpp_code':
-    case 'org_tax_monolith':
       return sanitizeForTagDisplay(v);
+    case 'org_tax_monolith': {
+      const lang = targetLanguage.trim().toLowerCase();
+      if (lang === 'en' || lang.startsWith('en-')) {
+        const hasRoleKeyword = /(Заказчик|Поставщик|заказчик|поставщик)/u.test(v);
+        if (hasRoleKeyword) {
+          const mirroredMonolith = mirrorRoleFragmentInsideMonolithEn(v);
+          console.log('[ALTRO_MIRROR] org_tax_monolith role fragment:', JSON.stringify(v), '→', JSON.stringify(mirroredMonolith));
+          return sanitizeForTagDisplay(mirroredMonolith);
+        }
+      }
+      return sanitizeForTagDisplay(v);
+    }
     case 'resonance_refine': {
       /** Детерминированная микро-нормализация сегмента для итераций Ψ (без LLM). */
       const n = v.normalize('NFC').replace(/\u00AD/g, '').replace(/\uFEFF/g, '');

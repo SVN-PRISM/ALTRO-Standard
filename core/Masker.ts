@@ -222,6 +222,7 @@ const PATTERN_SPECS_FOR_LOG = [
 /** Лимит итераций в `while (regex.exec)` — защита от бесконечного цикла при пустых совпадениях / багах RegExp. */
 const MAX_REGEX_EXEC_ITER = 100;
 const DEBUG_MASKER = process.env.ALTRO_DEBUG_MASKER === '1';
+const ORG_ROLE_KEYWORD_RE = /\b(Заказчик|Поставщик|заказчик|поставщик)\b/u;
 
 interface RawSpan {
   start: number;
@@ -352,6 +353,12 @@ export class Masker {
           const full = m[0];
           if (full.length === 0) {
             if (re.lastIndex === m.index) re.lastIndex++;
+            continue;
+          }
+          if (spec.type === 'org_tax_monolith' && ORG_ROLE_KEYWORD_RE.test(full)) {
+            if (DEBUG_MASKER) {
+              console.log('[MASKER] Skip org_tax_monolith with role keyword:', full);
+            }
             continue;
           }
           spans.push({
